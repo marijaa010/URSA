@@ -15,6 +15,7 @@ GNU General Public License for more details.
 
 #include <iostream>
 #include "URSA_SATinterpreter.hpp"
+#include "SMT_Interpreter.hpp"
 #include "ursa.tab.hpp"
 #include "FormulaFactory.h"
 #include "SATsolver.h"
@@ -32,7 +33,9 @@ bool bQuiet;
 bool bDimacsOnly;
 bool bMapping;
 bool bCoherentLogicProofExport;
+bool bSMTMode;
 Interpreter in;
+SMTInterpreter smtIn;
 
 unsigned int iVarCounter;
 
@@ -68,10 +71,12 @@ int main(int argc, char** argv) {
     bDimacsOnly=false;
     bCoherentLogicProofExport=false;
     bMapping=false;
+    bSMTMode=false;
     URSASolver = eClasp;
 
     for(i=1;i<argc;i++) {
-      if(argv[i][0]=='-')
+      if(argv[i][0]=='-') {
+         if(!strcmp(argv[i],"-smt")) { bSMTMode = true; continue; }
          switch(argv[i][1]) {
            case 'l':  if (sscanf(argv[i]+2,"%i",&len) == 1)  
                          iAbstractNumberLength = len;
@@ -102,11 +107,13 @@ int main(int argc, char** argv) {
                       cout << "-d - DIMACS output only" << endl;
                       cout << "-q - quite mode (models are not printed out)" << endl;
                       cout << "-m - prints mapping between URSA variables and SAT variables" << endl;
-                      cout << "-s - selects an underlying solvers (e.g., -sargosat, -sclasp, -sminisat; defaulf is clasp)" << endl << endl;
+                      cout << "-s - selects an underlying solvers (e.g., -sargosat, -sclasp, -sminisat; defaulf is clasp)" << endl;
+                      cout << "-smt - emit SMT-LIB QF_BV instead of running a SAT solver" << endl << endl;
                       cout << "Example:" << endl;
                       cout << "./ursa -l10 < examples/CSP/queens.urs" << endl;
            default :  break;
-         } 
+         }
+      }
     }
 
     iVarCounter=0;
@@ -126,8 +133,12 @@ int main(int argc, char** argv) {
 
 
 int ex(nodeType *p) {
+   if (bSMTMode) {
+      smtIn.RecordCommand(p);
+      return smtIn.ExecuteCommand(p);
+   }
    in.RecordCommand(p);
-   return in.ExecuteCommand(p); 
+   return in.ExecuteCommand(p);
 }
 
 
@@ -1016,8 +1027,11 @@ void Interpreter::ExecuteCommandTree(nodeType *p) {
 
 
 int store_procedure(nodeType *p) {
-   in.RecordProcedure(p);
-   return 0; 
+   if (bSMTMode)
+      smtIn.RecordProcedure(p);
+   else
+      in.RecordProcedure(p);
+   return 0;
 }
 
 

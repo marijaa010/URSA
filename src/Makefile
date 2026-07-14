@@ -3,12 +3,13 @@ CXX = g++
 LDFLAGS = -static-libstdc++
 CXXFLAGS = -std=c++11 -O2 -DNDEBUG  
 ADDFLAGS ?=
-INCLUDE = -IAbstractNumbers -IParser -IInterpreter -IUtils -ISATsolvers -ISATsolvers/clasp_solver -ISATsolvers/clasp_solver/include -ISATsolvers/clasp_solver/program_opts -ISATsolvers/ArgoSATsolver -ISATsolvers/ArgoSATsolver/basic-types -ISATsolvers/ArgoSATsolver/auxiliary -ISATsolvers/ArgoSATsolver/listeners -ISATsolvers/ArgoSATsolver/strategies -ISATsolvers/minisat  
+INCLUDE = -IAbstractNumbers -IParser -IInterpreter -IUtils -ISMTGenerator -ISATsolvers -ISATsolvers/clasp_solver -ISATsolvers/clasp_solver/include -ISATsolvers/clasp_solver/program_opts -ISATsolvers/ArgoSATsolver -ISATsolvers/ArgoSATsolver/basic-types -ISATsolvers/ArgoSATsolver/auxiliary -ISATsolvers/ArgoSATsolver/listeners -ISATsolvers/ArgoSATsolver/strategies -ISATsolvers/minisat
 
 ALL_CXXFLAGS = $(CXXFLAGS) -W -Wall $(INCLUDE)  $(ADDFLAGS)
 
 sources := $(wildcard Interpreter/*.cpp)
 sources += $(wildcard AbstractNumbers/*.cpp)
+sources += $(filter-out SMTGenerator/main.cpp, $(wildcard SMTGenerator/*.cpp))
 sources += $(wildcard Utils/*.cpp)
 sources += $(wildcard SATsolvers/ArgoSATsolver/*.cpp)
 sources += $(wildcard SATsolvers/ArgoSATsolver/auxiliary/*.cpp)

@@ -49,6 +49,8 @@ Options:
 
 -s - selects an underlying solvers (e.g., -sargosat, -sclasp; the defaulf is clasp)
 
+-smt - emit SMT-LIB QF_BV instead of running a SAT solver
+
 Example:
 
   ./ursa -l10 < examples/CSP/queens.urs
@@ -57,5 +59,14 @@ NOTA BENE: If URSA is used with clasp as an underlying SAT solver and if some pr
 variable is irrelevant for the asserted constraint, then its different values are not 
 considered within the set of all models (so the set of models may not be as expected).
 
+## SMT-LIB output
 
+With the `-smt` flag URSA does not run a SAT solver, instead it bit-blasts the
+constraints into an SMT-LIB QF_BV (Quantifier-Free Bit-Vector) formula and prints
+it to standard output. The resulting `.smt2` file can be fed to any QF_BV-capable
+SMT solver (Z3, Boolector, CVC5, ...).
 
+Example — solve `examples/Simple/system2unknowns.urs` with Z3:
+
+  ./ursa -smt < ../examples/Simple/system2unknowns.urs | grep -v '^\*' > out.smt2
+  z3 out.smt2

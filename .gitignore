@@ -1,0 +1,30 @@
+# Build artefakti
+*.o
+*.dep
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# Binaries
+src/ursa
+src/SMTGenerator/smt_demo
+
+# Generisani parser fajlovi (flex/bison)
+src/Parser/lex.yy.c
+src/Parser/ursa.tab.cpp
+src/Parser/ursa.tab.hpp
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor/IDE backup
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# macOS
+.DS_Store

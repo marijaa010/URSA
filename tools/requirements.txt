@@ -1,0 +1,2 @@
+# Install: pip install -r tools/requirements.txt
+z3-solver>=4.8.0
