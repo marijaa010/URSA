@@ -37,6 +37,21 @@ enum SMTNodeType {
     BOOL_NOT,
     BOOL_EQ,
 
+    // Integer nodes for QF_LIA. Values are unbounded integers, not modular.
+    INT_CONST,
+    INT_VAR,
+    INT_ADD,
+    INT_SUB,
+    INT_MUL,
+    INT_NEG,
+    INT_DIV,   // Euclidean integer division; second argument must be ground
+    INT_MOD,   // Euclidean modulo; second argument must be ground
+    INT_LT,
+    INT_LE,
+    INT_GT,
+    INT_GE,
+    INT_EQ,
+
     SMT_ITE
 };
 
@@ -110,6 +125,22 @@ public:
     static SMTExpr* makeBoolEq(SMTExpr* a, SMTExpr* b);
 
     static SMTExpr* makeIte(SMTExpr* cond, SMTExpr* thenE, SMTExpr* elseE);
+
+    // Integer (QF_LIA) constructors. Integer values are represented as
+    // unsigned 64-bit; negative values are produced via makeIntNeg.
+    static SMTExpr* makeIntConst(uint64_t value);
+    static SMTExpr* makeIntVar(const std::string& name);
+    static SMTExpr* makeIntAdd(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeIntSub(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeIntMul(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeIntNeg(SMTExpr* a);
+    static SMTExpr* makeIntDiv(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeIntMod(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeIntLt(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeIntLe(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeIntGt(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeIntGe(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeIntEq(SMTExpr* a, SMTExpr* b);
 
     // Release all hash-consed nodes. Analogous to FormulaFactory::Clear() in
     // the SAT path. Call this at the end of an SMT session if you want to

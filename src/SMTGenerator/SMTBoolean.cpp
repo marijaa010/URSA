@@ -3,6 +3,11 @@
 
 extern unsigned int iAbstractNumberLength;
 
+// Mirror of the enum in URSA_SATinterpreter.cpp (see SMTNumber.cpp for
+// rationale). Used to pick between BV and LIA emit paths for Bool→Number.
+typedef enum { eLogicQF_BV, eLogicQF_LIA } eSMTLogic;
+extern eSMTLogic bSMTLogic;
+
 using namespace std;
 
 SMTBoolean::SMTBoolean()
@@ -75,7 +80,12 @@ SMTNumber SMTBoolean::Int() const {
     int w = (int)iAbstractNumberLength;
     if (m_isGround) {
         uint64_t r = m_groundValue ? 1 : 0;
-        return SMTNumber(SMTFactory::makeBvConst(r, w), true, r);
+        return SMTNumber(r, w);
+    }
+    if (bSMTLogic == eLogicQF_LIA) {
+        SMTExpr* zero = SMTFactory::makeIntConst(0);
+        SMTExpr* one  = SMTFactory::makeIntConst(1);
+        return SMTNumber(SMTFactory::makeIte(m_expr, one, zero));
     }
     SMTExpr* zero = SMTFactory::makeBvConst(0, w);
     SMTExpr* one  = SMTFactory::makeBvConst(1, w);

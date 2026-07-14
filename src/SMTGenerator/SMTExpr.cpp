@@ -29,6 +29,7 @@ struct SMTExprHash {
         h ^= std::hash<int>{}(e->width) + 0x9e3779b9 + (h << 6) + (h >> 2);
         switch (e->type) {
             case BV_CONST:
+            case INT_CONST:
                 h ^= std::hash<uint64_t>{}(e->constValue) + 0x9e3779b9 + (h << 6) + (h >> 2);
                 break;
             case BOOL_CONST:
@@ -36,6 +37,7 @@ struct SMTExprHash {
                 break;
             case BV_VAR:
             case BOOL_VAR:
+            case INT_VAR:
                 h ^= std::hash<std::string>{}(e->varName) + 0x9e3779b9 + (h << 6) + (h >> 2);
                 break;
             default:
@@ -53,10 +55,12 @@ struct SMTExprEq {
         if (a->type != b->type) return false;
         if (a->width != b->width) return false;
         switch (a->type) {
-            case BV_CONST:    return a->constValue == b->constValue;
+            case BV_CONST:
+            case INT_CONST:   return a->constValue == b->constValue;
             case BOOL_CONST:  return a->boolValue == b->boolValue;
             case BV_VAR:
-            case BOOL_VAR:    return a->varName == b->varName;
+            case BOOL_VAR:
+            case INT_VAR:     return a->varName == b->varName;
             default:
                 if (a->children.size() != b->children.size()) return false;
                 for (size_t i = 0; i < a->children.size(); i++)
@@ -165,6 +169,21 @@ void SMTExpr::print(ostream& out) const {
             out << ")";
             break;
 
+        // LIA nodes — plain integer arithmetic in SMT-LIB.
+        case INT_CONST:   out << constValue; break;
+        case INT_VAR:     printSymbol(out, varName); break;
+        case INT_ADD:     printBinary(out, "+", this); break;
+        case INT_SUB:     printBinary(out, "-", this); break;
+        case INT_MUL:     printBinary(out, "*", this); break;
+        case INT_NEG:     printUnary(out, "-", this); break;
+        case INT_DIV:     printBinary(out, "div", this); break;
+        case INT_MOD:     printBinary(out, "mod", this); break;
+        case INT_LT:      printBinary(out, "<", this); break;
+        case INT_LE:      printBinary(out, "<=", this); break;
+        case INT_GT:      printBinary(out, ">", this); break;
+        case INT_GE:      printBinary(out, ">=", this); break;
+        case INT_EQ:      printBinary(out, "=", this); break;
+
         default:
             out << ";; UNKNOWN_TYPE";
             break;
@@ -226,6 +245,8 @@ static void emitCompact(std::ostream& out, const SMTExpr* e, const EmitCtx* ctx)
         case BV_VAR:      printSymbol(out, e->varName); return;
         case BOOL_CONST:  out << (e->boolValue ? "true" : "false"); return;
         case BOOL_VAR:    printSymbol(out, e->varName); return;
+        case INT_CONST:   out << e->constValue; return;
+        case INT_VAR:     printSymbol(out, e->varName); return;
         default: break;
     }
     // Everything else is (op child*) with 1..3 children.
@@ -251,6 +272,17 @@ static void emitCompact(std::ostream& out, const SMTExpr* e, const EmitCtx* ctx)
         case BOOL_XOR:    op = "xor"; break;
         case BOOL_NOT:    op = "not"; break;
         case BOOL_EQ:     op = "="; break;
+        case INT_ADD:     op = "+"; break;
+        case INT_SUB:     op = "-"; break;
+        case INT_MUL:     op = "*"; break;
+        case INT_NEG:     op = "-"; break;
+        case INT_DIV:     op = "div"; break;
+        case INT_MOD:     op = "mod"; break;
+        case INT_LT:      op = "<"; break;
+        case INT_LE:      op = "<="; break;
+        case INT_GT:      op = ">"; break;
+        case INT_GE:      op = ">="; break;
+        case INT_EQ:      op = "="; break;
         case SMT_ITE:     op = "ite"; break;
         default:          out << ";; UNKNOWN_TYPE"; return;
     }
@@ -297,7 +329,8 @@ static void emitPretty(std::ostream& out, const SMTExpr* e, int indent,
 static bool isLeafForSharing(const SMTExpr* e) {
     // These are already atomic in SMT-LIB — naming them saves no space.
     return e->type == BV_CONST || e->type == BV_VAR ||
-           e->type == BOOL_CONST || e->type == BOOL_VAR;
+           e->type == BOOL_CONST || e->type == BOOL_VAR ||
+           e->type == INT_CONST || e->type == INT_VAR;
 }
 
 // Count how many times each subexpression is referenced when walking `root`.
@@ -471,6 +504,33 @@ SMTExpr* SMTFactory::makeIte(SMTExpr* cond, SMTExpr* thenE, SMTExpr* elseE) {
     e->children.push_back(elseE);
     return intern(e);
 }
+
+// -----------------------------------------------------------------------
+// Integer (QF_LIA) factory. Width is not meaningful for integers, so all
+// nodes carry width 0; only the type distinguishes them from Bool nodes.
+// -----------------------------------------------------------------------
+
+SMTExpr* SMTFactory::makeIntConst(uint64_t value) {
+    SMTExpr* e = new SMTExpr(INT_CONST, 0);
+    e->constValue = value;   // stored raw; SMT-LIB emits decimal
+    return intern(e);
+}
+SMTExpr* SMTFactory::makeIntVar(const string& name) {
+    SMTExpr* e = new SMTExpr(INT_VAR, 0);
+    e->varName = name;
+    return intern(e);
+}
+SMTExpr* SMTFactory::makeIntAdd(SMTExpr* a, SMTExpr* b) { return makeBin(INT_ADD, a, b, 0); }
+SMTExpr* SMTFactory::makeIntSub(SMTExpr* a, SMTExpr* b) { return makeBin(INT_SUB, a, b, 0); }
+SMTExpr* SMTFactory::makeIntMul(SMTExpr* a, SMTExpr* b) { return makeBin(INT_MUL, a, b, 0); }
+SMTExpr* SMTFactory::makeIntNeg(SMTExpr* a)             { return makeUn(INT_NEG, a, 0); }
+SMTExpr* SMTFactory::makeIntDiv(SMTExpr* a, SMTExpr* b) { return makeBin(INT_DIV, a, b, 0); }
+SMTExpr* SMTFactory::makeIntMod(SMTExpr* a, SMTExpr* b) { return makeBin(INT_MOD, a, b, 0); }
+SMTExpr* SMTFactory::makeIntLt(SMTExpr* a, SMTExpr* b)  { return makeBin(INT_LT, a, b, 0); }
+SMTExpr* SMTFactory::makeIntLe(SMTExpr* a, SMTExpr* b)  { return makeBin(INT_LE, a, b, 0); }
+SMTExpr* SMTFactory::makeIntGt(SMTExpr* a, SMTExpr* b)  { return makeBin(INT_GT, a, b, 0); }
+SMTExpr* SMTFactory::makeIntGe(SMTExpr* a, SMTExpr* b)  { return makeBin(INT_GE, a, b, 0); }
+SMTExpr* SMTFactory::makeIntEq(SMTExpr* a, SMTExpr* b)  { return makeBin(INT_EQ, a, b, 0); }
 
 void SMTFactory::clear() {
     auto& c = cache();

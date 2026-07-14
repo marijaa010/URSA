@@ -11,6 +11,10 @@ extern map<const string, nodeType *, lstr> URSAprocedures;
 extern unsigned int iAbstractNumberLength;
 extern bool bQuiet;
 
+// SMT logic selector — controls which theory the emitted SMT-LIB uses.
+typedef enum { eLogicQF_BV, eLogicQF_LIA } eSMTLogic;
+extern eSMTLogic bSMTLogic;
+
 
 static uint64_t parseIntLiteral(const char* s) {
     if (!s) return 0;
@@ -317,7 +321,9 @@ bool SMTInterpreter::SolveConstraint(nodeType *p, bool /*bAllSolutions*/) {
     m_assertions.push_back(bConstraint);
 
     if (!m_hasOptimization) {
-        cout << "(set-logic QF_BV)" << endl;
+        cout << "(set-logic "
+             << (bSMTLogic == eLogicQF_LIA ? "QF_LIA" : "QF_BV")
+             << ")" << endl;
     }
     m_ST.collectFreeVarDeclarations(cout);
     cout << endl;
@@ -331,10 +337,15 @@ bool SMTInterpreter::SolveConstraint(nodeType *p, bool /*bAllSolutions*/) {
     }
     if (m_hasOptimization) {
         unsigned int w = iAbstractNumberLength;
-        cout << "(assert (bvuge " << m_optVarName << " "
-             << SMTExpr::formatBvConst(m_optMin, w) << "))" << endl;
-        cout << "(assert (bvule " << m_optVarName << " "
-             << SMTExpr::formatBvConst(m_optMax, w) << "))" << endl;
+        if (bSMTLogic == eLogicQF_LIA) {
+            cout << "(assert (>= " << m_optVarName << " " << m_optMin << "))" << endl;
+            cout << "(assert (<= " << m_optVarName << " " << m_optMax << "))" << endl;
+        } else {
+            cout << "(assert (bvuge " << m_optVarName << " "
+                 << SMTExpr::formatBvConst(m_optMin, w) << "))" << endl;
+            cout << "(assert (bvule " << m_optVarName << " "
+                 << SMTExpr::formatBvConst(m_optMax, w) << "))" << endl;
+        }
         cout << "(" << (m_optMaximize ? "maximize" : "minimize")
              << " " << m_optVarName << ")" << endl;
     }

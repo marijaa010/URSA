@@ -4,6 +4,11 @@
 
 extern unsigned int iAbstractNumberLength;
 
+// SMT logic mode selector; defined in URSA_SATinterpreter.cpp.
+// In LIA mode, free variables are emitted as (declare-fun x () Int).
+typedef enum { eLogicQF_BV, eLogicQF_LIA } eSMTLogic;
+extern eSMTLogic bSMTLogic;
+
 using namespace std;
 
 static bool symbolNeedsQuoting(const string& s) {
@@ -186,9 +191,12 @@ SMTBoolean SMTSymbolTable::getBoolElValue2(const string& sVarName,
 void SMTSymbolTable::collectFreeVarDeclarations(ostream& out) const {
     for (auto& kv : SymInt) {
         SMTExpr* e = kv.second->getExpr();
-        if (e && e->type == BV_VAR && e->varName == kv.first) {
+        if (!e || e->varName != kv.first) continue;
+        if (e->type == BV_VAR) {
             out << "(declare-fun " << quoteSymbol(kv.first)
                 << " () (_ BitVec " << kv.second->getWidth() << "))" << endl;
+        } else if (e->type == INT_VAR) {
+            out << "(declare-fun " << quoteSymbol(kv.first) << " () Int)" << endl;
         }
     }
     for (auto& kv : SymBool) {

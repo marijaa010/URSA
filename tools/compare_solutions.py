@@ -120,14 +120,20 @@ def _split_smtlib_forms(text: str) -> list[str]:
     return forms
 
 
-def extract_smt2(file_path: Path, length: int, ursa: str):
+def extract_smt2(file_path: Path, length: int, ursa: str, logic: str = "QF_BV"):
     """
-    Run URSA in -smt mode, parse the emitted SMT-LIB.
-    Returns ((declarations, assertions, free_vars), trivial, optimize).
+    Run URSA in -smt mode with the given SMT-LIB logic (QF_BV or QF_LIA),
+    parse the emitted SMT-LIB. Returns ((declarations, assertions, free_vars),
+    trivial, optimize).
     """
+    ursa_args = [ursa, f"-l{length}"]
+    if logic == "QF_LIA":
+        ursa_args.append("-smtlogic=QF_LIA")
+    else:
+        ursa_args.append("-smt")
     with open(file_path) as f:
         result = subprocess.run(
-            [ursa, "-smt", f"-l{length}"],
+            ursa_args,
             stdin=f,
             capture_output=True,
             text=True,
@@ -187,7 +193,8 @@ def quote_smt_symbol(name: str) -> str:
 
 def smt_value_to_decimal(value: str) -> str:
     """Convert an SMT-LIB value token to a decimal string for easier comparison.
-    #x03 -> "3", #b101 -> "5", true -> "true", (_ bv3 8) -> "3"."""
+    #x03 -> "3", #b101 -> "5", true -> "true", (_ bv3 8) -> "3",
+    5 -> "5", (- 5) -> "-5" (LIA)."""
     if value.startswith("#x"):
         return str(int(value[2:], 16))
     if value.startswith("#b"):
@@ -195,6 +202,10 @@ def smt_value_to_decimal(value: str) -> str:
     m = re.match(r"\(_ bv(\d+) \d+\)", value)
     if m:
         return m.group(1)
+    # LIA: negative integers are emitted as (- N)
+    m = re.match(r"\(-\s*(\d+)\)", value)
+    if m:
+        return "-" + m.group(1)
     return value
 
 
@@ -208,8 +219,21 @@ def parse_get_value(output: str) -> dict[str, str]:
     if out.startswith("sat") or out.startswith("unsat"):
         out = out.split("\n", 1)[1].strip() if "\n" in out else ""
 
+    # Value patterns (in order of specificity):
+    #   #x03, #b101         — BV literals
+    #   true, false         — Bool
+    #   (_ bv3 8)           — explicit BV constructor
+    #   (- 5)               — LIA negative integer
+    #   42                  — LIA nonnegative integer
+    value_pat = (
+        r"(?:#[xb][0-9a-fA-F]+)"
+        r"|true|false"
+        r"|\(_ bv\d+ \d+\)"
+        r"|\(-\s*\d+\)"
+        r"|-?\d+"
+    )
     pairs = re.findall(
-        r"\(\s*(\|[^|]+\||[^()\s|]+)\s+((?:#[xb][0-9a-fA-F]+)|true|false|\(_ bv\d+ \d+\))\s*\)",
+        r"\(\s*(\|[^|]+\||[^()\s|]+)\s+(" + value_pat + r")\s*\)",
         out,
     )
     return {(name[1:-1] if name.startswith("|") else name): value
@@ -225,11 +249,12 @@ def count_smt(
     timeout: int,
     total_timeout: float = 60.0,
     single_solution: bool = False,
+    logic: str = "QF_BV",
 ) -> tuple[int, list[dict[str, str]], dict]:
     t_start = time.perf_counter()
     t0 = time.perf_counter()
     (declarations, assertions, free_vars), trivial, optimize = extract_smt2(
-        file_path, length, ursa
+        file_path, length, ursa, logic
     )
     ursa_emit = time.perf_counter() - t0
     timings = {"ursa_emit": ursa_emit, "z3_total": 0.0, "z3_first": None, "z3_calls": 0}
@@ -265,8 +290,10 @@ def count_smt(
         decimal_model = {n: smt_value_to_decimal(v) for n, v in raw_model.items()}
         return 1, [decimal_model], timings
 
+    set_logic_line = f"(set-logic {logic})\n"
+
     if not free_vars:
-        smt2 = "(set-logic QF_BV)\n" + "\n".join(assertions) + "\n(check-sat)\n"
+        smt2 = set_logic_line + "\n".join(assertions) + "\n(check-sat)\n"
         t0 = time.perf_counter()
         out = run_z3(smt2, z3, timeout)
         elapsed = time.perf_counter() - t0
@@ -277,7 +304,7 @@ def count_smt(
         return (1, [{}], timings) if "sat" in out.split() else (0, [], timings)
 
     base = (
-        "(set-logic QF_BV)\n"
+        set_logic_line
         + "\n".join(declarations)
         + "\n"
         + "\n".join(assertions)
@@ -345,11 +372,12 @@ def count_smt_api(
     max_solutions: int,
     total_timeout: float = 60.0,
     single_solution: bool = False,
+    logic: str = "QF_BV",
 ) -> tuple[int, list[dict[str, str]], dict]:
     t_start = time.perf_counter()
     t0 = time.perf_counter()
     (declarations, assertions, free_vars), trivial, optimize = extract_smt2(
-        file_path, length, ursa
+        file_path, length, ursa, logic
     )
     ursa_emit = time.perf_counter() - t0
     timings = {"ursa_emit": ursa_emit, "z3_total": 0.0, "z3_first": None, "z3_calls": 0}
@@ -391,7 +419,7 @@ def count_smt_api(
         return 1, [decimal_model], timings
 
     smt2_text = (
-        "(set-logic QF_BV)\n"
+        f"(set-logic {logic})\n"
         + "\n".join(declarations)
         + "\n"
         + "\n".join(assertions)
@@ -530,6 +558,8 @@ def main():
                         help="skip the Z3 Python API comparison")
     parser.add_argument("--show-models", action="store_true",
                         help="print every model found (otherwise only counts)")
+    parser.add_argument("--smt-logic", choices=["QF_BV", "QF_LIA"], default="QF_BV",
+                        help="SMT-LIB logic to use for the SMT paths (default QF_BV)")
     parser.add_argument("-s", "--single-solution", action="store_true",
                         help="find only one solution (rewrites assert_all to assert) — "
                              "useful to measure 'find one' performance fairly, since Z3 has "
@@ -562,10 +592,10 @@ def main():
     if args.show_models:
         dump_models(sat_models)
 
-    print("Running SMT path (subprocess: z3 binary)...", flush=True)
+    print(f"Running SMT path ({args.smt_logic}, subprocess: z3 binary)...", flush=True)
     smt_count, smt_models, smt_t = count_smt(
         effective_file, args.length, args.ursa, args.z3, args.max, args.timeout,
-        args.total_timeout, args.single_solution,
+        args.total_timeout, args.single_solution, args.smt_logic,
     )
     print(f"  SMT solutions: {smt_count}")
     if args.show_models:
@@ -573,10 +603,10 @@ def main():
 
     api_count, api_models, api_t = None, None, None
     if HAVE_Z3PY and not args.no_api:
-        print("Running SMT path (Z3 Python API)...", flush=True)
+        print(f"Running SMT path ({args.smt_logic}, Z3 Python API)...", flush=True)
         api_count, api_models, api_t = count_smt_api(
             effective_file, args.length, args.ursa, args.max, args.total_timeout,
-            args.single_solution,
+            args.single_solution, args.smt_logic,
         )
         print(f"  SMT solutions: {api_count}")
         if args.show_models:

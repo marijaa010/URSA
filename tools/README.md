@@ -45,6 +45,11 @@ Options:
 - `--z3 PATH` — path to the `z3` binary (default looks on `$PATH`).
 - `--no-api` — skip the Z3 Python API path.
 - `--show-models` — print every model found (otherwise only counts).
+- `--smt-logic QF_BV|QF_LIA` — choose the SMT-LIB logic used by the SMT paths
+  (default `QF_BV`). Under `QF_LIA` free variables are declared with the `Int`
+  sort and arithmetic is unbounded; operators that have no linear-integer
+  counterpart (bitwise, shifts, nonlinear `var * var`) are rejected with an
+  explicit error from URSA.
 
 Exit code is 0 if all paths report the same count, 1 otherwise.
 

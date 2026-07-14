@@ -51,6 +51,8 @@ Options:
 
 -smt - emit SMT-LIB QF_BV instead of running a SAT solver
 
+-smtlogic=QF_BV|QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV)
+
 Example:
 
   ./ursa -l10 < examples/CSP/queens.urs
@@ -70,3 +72,36 @@ Example — solve `examples/Simple/system2unknowns.urs` with Z3:
 
   ./ursa -smt < ../examples/Simple/system2unknowns.urs | grep -v '^\*' > out.smt2
   z3 out.smt2
+
+### Linear Integer Arithmetic mode (QF_LIA)
+
+With `-smtlogic=QF_LIA` URSA emits QF_LIA (Linear Integer Arithmetic) instead
+of QF_BV. In this mode, numeric variables are treated as unbounded integers
+rather than fixed-width bit-vectors, and arithmetic follows standard integer
+semantics without modular wrap-around.
+
+  ./ursa -smtlogic=QF_LIA < ../examples/Simple/system2unknowns.urs
+
+Free variables are declared with the `Int` sort, and arithmetic uses the
+standard SMT-LIB operators (`+`, `-`, `*`, `<`, `<=`, `=`, `div`, `mod`).
+
+Restrictions in QF_LIA mode. The following operators are rejected with a
+clear error message because they have no counterpart in linear integer
+arithmetic:
+
+- Bitwise operators (`&`, `|`, `^`, `~`)
+- Shift operators (`<<`, `>>`)
+- Nonlinear multiplication of two symbolic variables (`x * y`); only
+  multiplication by a ground constant is permitted
+
+Semantic differences from QF_BV. URSA programs written for QF_BV assume
+modular arithmetic on fixed-width unsigned values. In QF_LIA the same
+program is interpreted over the mathematical integers, which changes the
+solution space in two ways:
+
+- Integer literals are not truncated to the width given by `-l`. A literal
+  such as `300` remains `300`, whereas in QF_BV with `-l 8` it would wrap
+  to `44`.
+- Signed comparisons apply: `nx < 0` may be true for negative `nx`. Programs
+  that rely on the unsigned domain should add explicit non-negativity
+  constraints (e.g., `assert(nx >= 0)`) when run in QF_LIA mode.
