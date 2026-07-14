@@ -323,7 +323,10 @@ bool SMTInterpreter::SolveConstraint(nodeType *p, bool /*bAllSolutions*/) {
     cout << endl;
     for (auto& a : m_assertions) {
         cout << "(assert ";
-        a.print(cout);
+        // Use the let-binding pretty-printer for top-level assertions:
+        // shared subexpressions get named (avoiding repetition in output),
+        // conjuncts of a big AND spine appear on separate lines with indent.
+        if (a.getExpr()) a.getExpr()->printWithLet(cout, /*indent=*/8);
         cout << ")" << endl;
     }
     if (m_hasOptimization) {
@@ -345,6 +348,20 @@ bool SMTInterpreter::SolveConstraint(nodeType *p, bool /*bAllSolutions*/) {
     double dTime_generation = m_Timer.ElapsedTime();
     if (!bQuiet) {
         cerr << "[SMT generation: " << dTime_parsing + dTime_generation << "s]" << endl;
+
+        // Hash-consing statistics: tree-size = nodes counted with multiplicity
+        // (what the printer would emit if everything were inlined); cache-size
+        // = unique nodes after sharing. Ratio shows how much sharing saves.
+        size_t treeTotal = 0;
+        for (const auto& a : m_assertions) {
+            if (a.getExpr()) treeTotal += a.getExpr()->treeSize();
+        }
+        size_t unique = SMTFactory::cacheSize();
+        if (unique > 0) {
+            double ratio = (double)treeTotal / (double)unique;
+            cerr << "[Hash-cons: " << treeTotal << " logical nodes, "
+                 << unique << " unique (sharing factor " << ratio << "x)]" << endl;
+        }
     }
     return true;
 }

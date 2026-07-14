@@ -87,6 +87,39 @@ def run_sat(file_path: Path, length: int, ursa: str) -> tuple[int, list[dict[str
     return -1, [], timings
 
 
+def _split_smtlib_forms(text: str) -> list[str]:
+    """Split SMT-LIB text into top-level parenthesized forms.
+    URSA's pretty-printer emits multi-line (assert (and ... ...)), so a
+    line-by-line parse is not enough. This walks with balanced parentheses,
+    respecting `|...|` quoted symbols and `; ...` line comments."""
+    forms = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == ';':                                  # skip line comment
+            j = text.find('\n', i)
+            i = n if j == -1 else j + 1
+            continue
+        if c == '(':
+            depth = 1
+            start = i
+            i += 1
+            in_quote = False
+            while i < n and depth > 0:
+                ch = text[i]
+                if ch == '|':
+                    in_quote = not in_quote
+                elif not in_quote:
+                    if ch == '(':   depth += 1
+                    elif ch == ')': depth -= 1
+                i += 1
+            forms.append(text[start:i])
+        else:
+            i += 1
+    return forms
+
+
 def extract_smt2(file_path: Path, length: int, ursa: str):
     """
     Run URSA in -smt mode, parse the emitted SMT-LIB.
@@ -105,21 +138,26 @@ def extract_smt2(file_path: Path, length: int, ursa: str):
     free_vars = []
     optimize = None
     trivial = None
+    out = result.stdout
 
-    for line in result.stdout.splitlines():
-        if line.startswith("yes (trivially)"):
-            trivial = True
-        elif line.startswith("no (trivially)"):
-            trivial = False
-        elif line.startswith("(declare-fun"):
-            declarations.append(line)
-            m = re.match(r"\(declare-fun\s+(\S+)\s+\(\)", line)
+    # Handle trivial results emitted as plain-text lines (not parenthesized).
+    for line in out.splitlines():
+        if line.startswith("yes (trivially)"): trivial = True
+        elif line.startswith("no (trivially)"): trivial = False
+
+    # Walk the SMT-LIB output as balanced parenthesized forms so that
+    # multi-line (assert ...) blocks from the pretty-printer are treated
+    # as single logical forms.
+    for form in _split_smtlib_forms(out):
+        if form.startswith("(declare-fun"):
+            declarations.append(form)
+            m = re.match(r"\(declare-fun\s+(\S+)\s+\(\)", form)
             if m:
                 free_vars.append(m.group(1))
-        elif line.startswith("(assert"):
-            assertions.append(line)
-        elif line.startswith("(minimize") or line.startswith("(maximize"):
-            optimize = line
+        elif form.startswith("(assert"):
+            assertions.append(form)
+        elif form.startswith("(minimize") or form.startswith("(maximize"):
+            optimize = form
 
     if trivial is not None and not assertions:
         return ([], [], []), trivial, None

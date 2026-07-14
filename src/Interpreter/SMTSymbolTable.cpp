@@ -31,6 +31,18 @@ static string itos(uint64_t i) {
     return ss.str();
 }
 
+// Build array element name using only characters allowed in SMT-LIB simple
+// symbols (no `[` or `]`). Convention: `a[3]` becomes `a_3_`, `a[3][5]`
+// becomes `a_3__5_`. Chosen after prof. Janičić suggested avoiding quoted
+// identifiers where a plain rewrite is enough.
+static string arrayElemName(const string& base, uint64_t idx) {
+    return base + "_" + itos(idx) + "_";
+}
+
+static string arrayElemName2(const string& base, uint64_t idx1, uint64_t idx2) {
+    return base + "_" + itos(idx1) + "__" + itos(idx2) + "_";
+}
+
 void SMTSymbolTable::Clear() {
     for (auto& kv : SymInt) delete kv.second;
     for (auto& kv : SymBool) delete kv.second;
@@ -77,16 +89,16 @@ void SMTSymbolTable::letInt(const string& sVarName, const SMTNumber& nValue) {
 void SMTSymbolTable::letIntEl(const string& sVarName, const SMTNumber& nIndex,
                               const SMTNumber& nValue) {
     assert(nIndex.IsGroundNumber());
-    string name = sVarName + "[" + itos(nIndex.GetGroundValueUnsigned()) + "]";
-    letInt(name, nValue);
+    letInt(arrayElemName(sVarName, nIndex.GetGroundValueUnsigned()), nValue);
 }
 
 void SMTSymbolTable::letIntEl2(const string& sVarName, const SMTNumber& nIndex1,
                                const SMTNumber& nIndex2, const SMTNumber& nValue) {
     assert(nIndex1.IsGroundNumber() && nIndex2.IsGroundNumber());
-    string name = sVarName + "[" + itos(nIndex1.GetGroundValueUnsigned())
-                + "][" + itos(nIndex2.GetGroundValueUnsigned()) + "]";
-    letInt(name, nValue);
+    letInt(arrayElemName2(sVarName,
+                          nIndex1.GetGroundValueUnsigned(),
+                          nIndex2.GetGroundValueUnsigned()),
+           nValue);
 }
 
 SMTNumber SMTSymbolTable::getIntValue(const string& sVarName) {
@@ -103,16 +115,15 @@ SMTNumber SMTSymbolTable::getIntValue(const string& sVarName) {
 
 SMTNumber SMTSymbolTable::getIntElValue(const string& sVarName, const SMTNumber& nIndex) {
     assert(nIndex.IsGroundNumber());
-    string name = sVarName + "[" + itos(nIndex.GetGroundValueUnsigned()) + "]";
-    return getIntValue(name);
+    return getIntValue(arrayElemName(sVarName, nIndex.GetGroundValueUnsigned()));
 }
 
 SMTNumber SMTSymbolTable::getIntElValue2(const string& sVarName,
                                         const SMTNumber& nIndex1, const SMTNumber& nIndex2) {
     assert(nIndex1.IsGroundNumber() && nIndex2.IsGroundNumber());
-    string name = sVarName + "[" + itos(nIndex1.GetGroundValueUnsigned())
-                + "][" + itos(nIndex2.GetGroundValueUnsigned()) + "]";
-    return getIntValue(name);
+    return getIntValue(arrayElemName2(sVarName,
+                                       nIndex1.GetGroundValueUnsigned(),
+                                       nIndex2.GetGroundValueUnsigned()));
 }
 
 // ----------------------------------------------------------------------------
@@ -133,16 +144,16 @@ void SMTSymbolTable::letBool(const string& sVarName, const SMTBoolean& bValue) {
 void SMTSymbolTable::letBoolEl(const string& sVarName, const SMTNumber& nIndex,
                                const SMTBoolean& bValue) {
     assert(nIndex.IsGroundNumber());
-    string name = sVarName + "[" + itos(nIndex.GetGroundValueUnsigned()) + "]";
-    letBool(name, bValue);
+    letBool(arrayElemName(sVarName, nIndex.GetGroundValueUnsigned()), bValue);
 }
 
 void SMTSymbolTable::letBoolEl2(const string& sVarName, const SMTNumber& nIndex1,
                                 const SMTNumber& nIndex2, const SMTBoolean& bValue) {
     assert(nIndex1.IsGroundNumber() && nIndex2.IsGroundNumber());
-    string name = sVarName + "[" + itos(nIndex1.GetGroundValueUnsigned())
-                + "][" + itos(nIndex2.GetGroundValueUnsigned()) + "]";
-    letBool(name, bValue);
+    letBool(arrayElemName2(sVarName,
+                           nIndex1.GetGroundValueUnsigned(),
+                           nIndex2.GetGroundValueUnsigned()),
+            bValue);
 }
 
 SMTBoolean SMTSymbolTable::getBoolValue(const string& sVarName) {
@@ -159,16 +170,15 @@ SMTBoolean SMTSymbolTable::getBoolValue(const string& sVarName) {
 
 SMTBoolean SMTSymbolTable::getBoolElValue(const string& sVarName, const SMTNumber& nIndex) {
     assert(nIndex.IsGroundNumber());
-    string name = sVarName + "[" + itos(nIndex.GetGroundValueUnsigned()) + "]";
-    return getBoolValue(name);
+    return getBoolValue(arrayElemName(sVarName, nIndex.GetGroundValueUnsigned()));
 }
 
 SMTBoolean SMTSymbolTable::getBoolElValue2(const string& sVarName,
                                           const SMTNumber& nIndex1, const SMTNumber& nIndex2) {
     assert(nIndex1.IsGroundNumber() && nIndex2.IsGroundNumber());
-    string name = sVarName + "[" + itos(nIndex1.GetGroundValueUnsigned())
-                + "][" + itos(nIndex2.GetGroundValueUnsigned()) + "]";
-    return getBoolValue(name);
+    return getBoolValue(arrayElemName2(sVarName,
+                                        nIndex1.GetGroundValueUnsigned(),
+                                        nIndex2.GetGroundValueUnsigned()));
 }
 
 // ----------------------------------------------------------------------------
