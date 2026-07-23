@@ -17,6 +17,12 @@ try:
 except ImportError:
     HAVE_Z3PY = False
 
+try:
+    import cvc5 as cvc5py
+    HAVE_CVC5PY = True
+except ImportError:
+    HAVE_CVC5PY = False
+
 
 def plural(n: int, word: str) -> str:
     return word if n == 1 else word + "s"
@@ -88,10 +94,7 @@ def run_sat(file_path: Path, length: int, ursa: str) -> tuple[int, list[dict[str
 
 
 def _split_smtlib_forms(text: str) -> list[str]:
-    """Split SMT-LIB text into top-level parenthesized forms.
-    URSA's pretty-printer emits multi-line (assert (and ... ...)), so a
-    line-by-line parse is not enough. This walks with balanced parentheses,
-    respecting `|...|` quoted symbols and `; ...` line comments."""
+    """Split SMT-LIB text into top-level parenthesized forms."""
     forms = []
     i = 0
     n = len(text)
@@ -146,14 +149,10 @@ def extract_smt2(file_path: Path, length: int, ursa: str, logic: str = "QF_BV"):
     trivial = None
     out = result.stdout
 
-    # Handle trivial results emitted as plain-text lines (not parenthesized).
     for line in out.splitlines():
         if line.startswith("yes (trivially)"): trivial = True
         elif line.startswith("no (trivially)"): trivial = False
 
-    # Walk the SMT-LIB output as balanced parenthesized forms so that
-    # multi-line (assert ...) blocks from the pretty-printer are treated
-    # as single logical forms.
     for form in _split_smtlib_forms(out):
         if form.startswith("(declare-fun"):
             declarations.append(form)
@@ -170,10 +169,19 @@ def extract_smt2(file_path: Path, length: int, ursa: str, logic: str = "QF_BV"):
     return (declarations, assertions, free_vars), None, optimize
 
 
-def run_z3(smt2: str, z3: str, timeout: int) -> str:
-    """Send SMT-LIB to Z3 via stdin, return its stdout."""
+def solver_cmd(solver_name: str, binary: str) -> list[str]:
+    """Return the command line invocation for a given solver reading SMT-LIB from stdin."""
+    if solver_name == "z3":
+        return [binary, "-in"]
+    if solver_name == "cvc5":
+        return [binary, "--lang", "smt2", "--produce-models", "-"]
+    raise ValueError(f"unknown SMT solver: {solver_name}")
+
+
+def run_smt_solver(smt2: str, solver_name: str, binary: str, timeout: int) -> str:
+    """Send SMT-LIB to the chosen solver via stdin, return its stdout."""
     result = subprocess.run(
-        [z3, "-in"],
+        solver_cmd(solver_name, binary),
         input=smt2,
         capture_output=True,
         text=True,
@@ -219,12 +227,6 @@ def parse_get_value(output: str) -> dict[str, str]:
     if out.startswith("sat") or out.startswith("unsat"):
         out = out.split("\n", 1)[1].strip() if "\n" in out else ""
 
-    # Value patterns (in order of specificity):
-    #   #x03, #b101         — BV literals
-    #   true, false         — Bool
-    #   (_ bv3 8)           — explicit BV constructor
-    #   (- 5)               — LIA negative integer
-    #   42                  — LIA nonnegative integer
     value_pat = (
         r"(?:#[xb][0-9a-fA-F]+)"
         r"|true|false"
@@ -244,7 +246,8 @@ def count_smt(
     file_path: Path,
     length: int,
     ursa: str,
-    z3: str,
+    solver_name: str,
+    solver_binary: str,
     max_solutions: int,
     timeout: int,
     total_timeout: float = 60.0,
@@ -277,7 +280,7 @@ def count_smt(
             + "(get-value (" + " ".join(free_vars) + "))\n"
         )
         t0 = time.perf_counter()
-        out = run_z3(smt2, z3, timeout)
+        out = run_smt_solver(smt2, solver_name, solver_binary, timeout)
         elapsed = time.perf_counter() - t0
         timings["z3_total"] = elapsed
         timings["z3_first"] = elapsed
@@ -295,7 +298,7 @@ def count_smt(
     if not free_vars:
         smt2 = set_logic_line + "\n".join(assertions) + "\n(check-sat)\n"
         t0 = time.perf_counter()
-        out = run_z3(smt2, z3, timeout)
+        out = run_smt_solver(smt2, solver_name, solver_binary, timeout)
         elapsed = time.perf_counter() - t0
         timings["z3_total"] = elapsed
         timings["z3_first"] = elapsed
@@ -322,7 +325,7 @@ def count_smt(
             break
         smt2 = base + "\n".join(blocking) + "\n(check-sat)\n" + get_value
         t0 = time.perf_counter()
-        out = run_z3(smt2, z3, timeout)
+        out = run_smt_solver(smt2, solver_name, solver_binary, timeout)
         z3_elapsed = time.perf_counter() - t0
         timings["z3_total"] += z3_elapsed
         timings["z3_calls"] += 1
@@ -365,7 +368,7 @@ def count_smt(
     return len(models), models, timings
 
 
-def count_smt_api(
+def _count_smt_api_z3(
     file_path: Path,
     length: int,
     ursa: str,
@@ -432,7 +435,6 @@ def count_smt_api(
     except z3py.Z3Exception as e:
         print("WARNING: Z3 API failed to parse SMT-LIB:", file=sys.stderr)
         msg = str(e)
-        # show only the first few errors; the rest is usually cascading noise
         for line in msg.splitlines()[:5]:
             print(f"  {line}", file=sys.stderr)
         timings["wall"] = time.perf_counter() - t_start
@@ -447,7 +449,6 @@ def count_smt_api(
 
     models: list[dict[str, str]] = []
     if not var_consts:
-        # No free variables — single check-sat decides everything.
         t0 = time.perf_counter()
         result = solver.check()
         elapsed = time.perf_counter() - t0
@@ -509,10 +510,156 @@ def count_smt_api(
     return len(models), models, timings
 
 
+def _count_smt_api_cvc5(
+    file_path: Path,
+    length: int,
+    ursa: str,
+    max_solutions: int,
+    total_timeout: float = 60.0,
+    single_solution: bool = False,
+    logic: str = "QF_BV",
+) -> tuple[int, list[dict[str, str]], dict]:
+    if not HAVE_CVC5PY:
+        return -1, [], {"error": "cvc5 Python module not installed"}
+
+    t_start = time.perf_counter()
+    t0 = time.perf_counter()
+    (declarations, assertions, free_vars), trivial, optimize = extract_smt2(
+        file_path, length, ursa, logic
+    )
+    ursa_emit = time.perf_counter() - t0
+    timings = {"ursa_emit": ursa_emit, "z3_total": 0.0, "z3_first": None, "z3_calls": 0}
+
+    if trivial is True:
+        timings["wall"] = time.perf_counter() - t_start
+        return 1, [{}], timings
+    if trivial is False:
+        timings["wall"] = time.perf_counter() - t_start
+        return 0, [], timings
+
+    smt2_text = (
+        f"(set-logic {logic})\n"
+        + "\n".join(declarations)
+        + "\n"
+        + "\n".join(assertions)
+        + "\n"
+    )
+
+    try:
+        tm = cvc5py.TermManager()
+        solver = cvc5py.Solver(tm)
+        solver.setOption("produce-models", "true")
+        parser = cvc5py.InputParser(solver)
+        parser.setStringInput(cvc5py.InputLanguage.SMT_LIB_2_6, smt2_text, "input")
+        sm = parser.getSymbolManager()
+        while True:
+            cmd = parser.nextCommand()
+            if cmd.isNull():
+                break
+            cmd.invoke(solver, sm)
+    except Exception as e:
+        print(f"WARNING: cvc5 API setup failed: {e}", file=sys.stderr)
+        timings["wall"] = time.perf_counter() - t_start
+        return -1, [], timings
+
+    declared = sm.getDeclaredTerms()
+    var_terms = {}
+    for term in declared:
+        try:
+            name = str(term)
+            var_terms[name] = term
+        except Exception:
+            pass
+
+    models: list[dict[str, str]] = []
+    if not var_terms:
+        t0 = time.perf_counter()
+        result = solver.checkSat()
+        elapsed = time.perf_counter() - t0
+        timings["z3_total"] = elapsed
+        timings["z3_first"] = elapsed
+        timings["z3_calls"] = 1
+        timings["wall"] = time.perf_counter() - t_start
+        return (1, [{}], timings) if result.isSat() else (0, [], timings)
+
+    progress_every = 50
+    hit_total_timeout = False
+    while len(models) < max_solutions:
+        if time.perf_counter() - t_start > total_timeout:
+            hit_total_timeout = True
+            break
+        t0 = time.perf_counter()
+        result = solver.checkSat()
+        z3_elapsed = time.perf_counter() - t0
+        timings["z3_total"] += z3_elapsed
+        timings["z3_calls"] += 1
+        if timings["z3_first"] is None:
+            timings["z3_first"] = z3_elapsed
+
+        if result.isUnsat():
+            break
+        if not result.isSat():
+            print(f"WARNING: cvc5 API returned {result}", file=sys.stderr)
+            break
+
+        raw_model = {}
+        decimal_model = {}
+        for name, term in var_terms.items():
+            val = solver.getValue(term)
+            raw_model[name] = val
+            decimal_model[name] = smt_value_to_decimal(str(val))
+
+        blocking_parts = []
+        for name, term in var_terms.items():
+            eq = tm.mkTerm(cvc5py.Kind.EQUAL, term, raw_model[name])
+            blocking_parts.append(eq)
+        if len(blocking_parts) == 1:
+            blocking = tm.mkTerm(cvc5py.Kind.NOT, blocking_parts[0])
+        else:
+            conj = tm.mkTerm(cvc5py.Kind.AND, *blocking_parts)
+            blocking = tm.mkTerm(cvc5py.Kind.NOT, conj)
+        solver.assertFormula(blocking)
+        models.append(decimal_model)
+
+        if single_solution:
+            break
+        if len(models) % progress_every == 0:
+            elapsed = time.perf_counter() - t_start
+            print(f"  ... {len(models)} models, {elapsed:.1f}s elapsed",
+                  file=sys.stderr, flush=True)
+
+    if hit_total_timeout:
+        print(f"WARNING: hit --total-timeout {total_timeout}s; partial count",
+              file=sys.stderr)
+    elif len(models) == max_solutions:
+        print(f"WARNING: reached --max {max_solutions}; may be more solutions",
+              file=sys.stderr)
+    timings["wall"] = time.perf_counter() - t_start
+    return len(models), models, timings
+
+
+def count_smt_api(
+    file_path: Path,
+    length: int,
+    ursa: str,
+    solver_name: str,
+    solver_binary: str,
+    max_solutions: int,
+    total_timeout: float = 60.0,
+    single_solution: bool = False,
+    logic: str = "QF_BV",
+) -> tuple[int, list[dict[str, str]], dict]:
+    if solver_name == "z3":
+        return _count_smt_api_z3(file_path, length, ursa, max_solutions,
+                                 total_timeout, single_solution, logic)
+    if solver_name == "cvc5":
+        return _count_smt_api_cvc5(file_path, length, ursa, max_solutions,
+                                   total_timeout, single_solution, logic)
+    raise ValueError(f"unknown solver: {solver_name}")
+
+
 def _collect_free_vars(expr):
-    """Walk a Z3 AST iteratively, yield uninterpreted constants (free variables).
-    URSA assertions are deeply right-nested (and (and (and ...))), which blows
-    the default Python recursion limit (1000) — so use an explicit stack."""
+    """Yield uninterpreted constants (free variables) from a Z3 AST."""
     seen = set()
     stack = [expr]
     while stack:
@@ -554,6 +701,9 @@ def main():
     parser.add_argument("--ursa", default=str(Path(__file__).parent.parent / "src" / "ursa"),
                         help="path to ursa binary")
     parser.add_argument("--z3", default="z3", help="path to z3 binary")
+    parser.add_argument("--cvc5", default="cvc5", help="path to cvc5 binary")
+    parser.add_argument("--smt-solver", choices=["z3", "cvc5"], default="z3",
+                        help="which SMT solver to use (default: z3)")
     parser.add_argument("--no-api", action="store_true",
                         help="skip the Z3 Python API comparison")
     parser.add_argument("--show-models", action="store_true",
@@ -592,27 +742,38 @@ def main():
     if args.show_models:
         dump_models(sat_models)
 
-    print(f"Running SMT path ({args.smt_logic}, subprocess: z3 binary)...", flush=True)
+    solver_binary = {"z3": args.z3, "cvc5": args.cvc5}[args.smt_solver]
+    print(f"Running SMT path ({args.smt_logic}, subprocess: {args.smt_solver} binary)...", flush=True)
     smt_count, smt_models, smt_t = count_smt(
-        effective_file, args.length, args.ursa, args.z3, args.max, args.timeout,
-        args.total_timeout, args.single_solution, args.smt_logic,
+        effective_file, args.length, args.ursa, args.smt_solver, solver_binary,
+        args.max, args.timeout, args.total_timeout, args.single_solution, args.smt_logic,
     )
     print(f"  SMT solutions: {smt_count}")
     if args.show_models:
         dump_models(smt_models)
 
     api_count, api_models, api_t = None, None, None
-    if HAVE_Z3PY and not args.no_api:
-        print(f"Running SMT path ({args.smt_logic}, Z3 Python API)...", flush=True)
+    api_available = {
+        "z3": HAVE_Z3PY,
+        "cvc5": HAVE_CVC5PY,
+    }.get(args.smt_solver, False)
+
+    if api_available and not args.no_api:
+        print(f"Running SMT path ({args.smt_logic}, {args.smt_solver} Python API)...", flush=True)
         api_count, api_models, api_t = count_smt_api(
-            effective_file, args.length, args.ursa, args.max, args.total_timeout,
+            effective_file, args.length, args.ursa, args.smt_solver, solver_binary,
+            args.max, args.total_timeout,
             args.single_solution, args.smt_logic,
         )
         print(f"  SMT solutions: {api_count}")
         if args.show_models:
             dump_models(api_models)
-    elif not HAVE_Z3PY:
-        print("(Z3 Python API not installed; run: pip install z3-solver)")
+    elif not api_available:
+        hint = {
+            "z3": "pip install z3-solver",
+            "cvc5": "pip install cvc5",
+        }.get(args.smt_solver, "")
+        print(f"({args.smt_solver} Python API not available; {hint})")
 
     print()
     print("Timing:")
@@ -621,24 +782,25 @@ def main():
         print(f"                  gen:  {sat_t['generation']*1000:9.2f} ms")
     if "solving" in sat_t:
         print(f"                  solv: {sat_t['solving']*1000:9.2f} ms")
+    solver_label = args.smt_solver
     print(f"  SMT subprocess  wall: {smt_t['wall']*1000:9.2f} ms")
     print(f"                  emit: {smt_t['ursa_emit']*1000:9.2f} ms")
-    print(f"                  z3:   {smt_t['z3_total']*1000:9.2f} ms over {smt_t['z3_calls']} {plural(smt_t['z3_calls'], 'call')}")
+    print(f"                  {solver_label:5}:{smt_t['z3_total']*1000:9.2f} ms over {smt_t['z3_calls']} {plural(smt_t['z3_calls'], 'call')}")
     if smt_t["z3_first"] is not None:
         print(f"                  1st:  {smt_t['z3_first']*1000:9.2f} ms (first solution)")
     if api_t is not None:
         print(f"  SMT Python API  wall: {api_t['wall']*1000:9.2f} ms")
         print(f"                  emit: {api_t['ursa_emit']*1000:9.2f} ms")
-        print(f"                  z3:   {api_t['z3_total']*1000:9.2f} ms over {api_t['z3_calls']} {plural(api_t['z3_calls'], 'call')}")
+        print(f"                  {solver_label:5}:{api_t['z3_total']*1000:9.2f} ms over {api_t['z3_calls']} {plural(api_t['z3_calls'], 'call')}")
         if api_t["z3_first"] is not None:
             print(f"                  1st:  {api_t['z3_first']*1000:9.2f} ms (first solution)")
     if sat_t.get("solving") is not None:
         print()
         print("Ratios vs SAT solving:")
         if smt_t["z3_first"] is not None and sat_t["solving"] > 0:
-            print(f"  subprocess z3 first / SAT solving: {smt_t['z3_first']/sat_t['solving']:.1f}x")
+            print(f"  subprocess {solver_label} first / SAT solving: {smt_t['z3_first']/sat_t['solving']:.1f}x")
         if api_t is not None and api_t["z3_first"] is not None and sat_t["solving"] > 0:
-            print(f"  api z3 first / SAT solving:        {api_t['z3_first']/sat_t['solving']:.1f}x")
+            print(f"  api {solver_label} first / SAT solving:        {api_t['z3_first']/sat_t['solving']:.1f}x")
         if api_t is not None and smt_t["z3_first"] is not None and api_t["z3_first"] is not None and api_t["z3_first"] > 0:
             print(f"  subprocess overhead vs api (first call): {smt_t['z3_first']/api_t['z3_first']:.1f}x")
 

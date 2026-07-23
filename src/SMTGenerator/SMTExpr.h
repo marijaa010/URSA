@@ -23,6 +23,9 @@ enum SMTNodeType {
     BV_SHL,
     BV_LSHR,
 
+    BV_UDIV,
+    BV_UREM,
+
     BV_EQ,
     BV_ULT,
     BV_ULE,
@@ -37,20 +40,23 @@ enum SMTNodeType {
     BOOL_NOT,
     BOOL_EQ,
 
-    // Integer nodes for QF_LIA. Values are unbounded integers, not modular.
     INT_CONST,
     INT_VAR,
     INT_ADD,
     INT_SUB,
     INT_MUL,
     INT_NEG,
-    INT_DIV,   // Euclidean integer division; second argument must be ground
-    INT_MOD,   // Euclidean modulo; second argument must be ground
+    INT_DIV,
+    INT_MOD,
     INT_LT,
     INT_LE,
     INT_GT,
     INT_GE,
     INT_EQ,
+
+    ARRAY_VAR,
+    ARRAY_SELECT,
+    ARRAY_STORE,
 
     SMT_ITE
 };
@@ -65,28 +71,17 @@ public:
     uint64_t constValue;
     bool boolValue;
 
+    int indexWidth;
+    int indexWidth2;
+    bool is2D;
+
     SMTExpr(SMTNodeType t, int w)
-        : type(t), width(w), constValue(0), boolValue(false) {}
+        : type(t), width(w), constValue(0), boolValue(false),
+          indexWidth(0), indexWidth2(0), is2D(false) {}
 
     void print(std::ostream& out) const;
-
-    // Multiline pretty-print with flattening of associative AND/OR/XOR chains.
-    // Useful as top-level printer for (assert ...) — makes the output readable
-    // instead of a single huge line. `indent` is the number of spaces prepended
-    // to the *inner* lines (the caller places the outer opening).
     void printPretty(std::ostream& out, int indent = 0) const;
-
-    // Pretty-print with automatic let-bindings for shared subexpressions.
-    // Requires that hash-consing is already active (which it is by default);
-    // shared subexpressions are detected via pointer identity.
-    // A composite node (not BV_CONST / *_VAR / BOOL_CONST) that appears more
-    // than once inside this subtree is factored out into a `(let ((s N expr)) …)`
-    // scope; lets are nested bottom-up so a name may refer to an earlier one.
     void printWithLet(std::ostream& out, int indent = 0) const;
-
-    // Number of nodes in this subtree when traversed without sharing, i.e.
-    // counting each occurrence separately. Useful for measuring how much
-    // hash-consing saves: compare against SMTFactory::cacheSize().
     size_t treeSize() const;
 
     static std::string formatBvConst(uint64_t value, int width);
@@ -109,6 +104,8 @@ public:
 
     static SMTExpr* makeBvShl(SMTExpr* a, SMTExpr* b);
     static SMTExpr* makeBvLshr(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeBvUdiv(SMTExpr* a, SMTExpr* b);
+    static SMTExpr* makeBvUrem(SMTExpr* a, SMTExpr* b);
 
     static SMTExpr* makeBvEq(SMTExpr* a, SMTExpr* b);
     static SMTExpr* makeBvUlt(SMTExpr* a, SMTExpr* b);
@@ -126,8 +123,6 @@ public:
 
     static SMTExpr* makeIte(SMTExpr* cond, SMTExpr* thenE, SMTExpr* elseE);
 
-    // Integer (QF_LIA) constructors. Integer values are represented as
-    // unsigned 64-bit; negative values are produced via makeIntNeg.
     static SMTExpr* makeIntConst(uint64_t value);
     static SMTExpr* makeIntVar(const std::string& name);
     static SMTExpr* makeIntAdd(SMTExpr* a, SMTExpr* b);
@@ -142,9 +137,14 @@ public:
     static SMTExpr* makeIntGe(SMTExpr* a, SMTExpr* b);
     static SMTExpr* makeIntEq(SMTExpr* a, SMTExpr* b);
 
-    // Release all hash-consed nodes. Analogous to FormulaFactory::Clear() in
-    // the SAT path. Call this at the end of an SMT session if you want to
-    // free the DAG memory; otherwise the cache persists for process lifetime.
+    static SMTExpr* makeArrayVar(const std::string& name,
+                                 int indexWidth, int elementWidth);
+    static SMTExpr* makeArrayVar2D(const std::string& name,
+                                   int indexWidth1, int indexWidth2,
+                                   int elementWidth);
+    static SMTExpr* makeArraySelect(SMTExpr* array, SMTExpr* index);
+    static SMTExpr* makeArrayStore(SMTExpr* array, SMTExpr* index, SMTExpr* value);
+
     static void clear();
     static size_t cacheSize();
 };

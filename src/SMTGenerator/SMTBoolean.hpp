@@ -15,7 +15,7 @@ public:
     SMTExpr* getExpr() const { return m_expr; }
 
     bool IsGroundBoolean() const { return m_isGround; }
-    bool GetGroundValue() const { return m_groundValue; }
+    bool GetGroundValue() const;
 
     SMTBoolean operator&(const SMTBoolean& other) const;
     SMTBoolean operator|(const SMTBoolean& other) const;

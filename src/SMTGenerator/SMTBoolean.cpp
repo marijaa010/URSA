@@ -1,14 +1,22 @@
 #include "SMTBoolean.hpp"
 #include "SMTNumber.hpp"
+#include <cstdlib>
 
 extern unsigned int iAbstractNumberLength;
 
-// Mirror of the enum in URSA_SATinterpreter.cpp (see SMTNumber.cpp for
-// rationale). Used to pick between BV and LIA emit paths for Bool→Number.
 typedef enum { eLogicQF_BV, eLogicQF_LIA } eSMTLogic;
 extern eSMTLogic bSMTLogic;
 
 using namespace std;
+
+bool SMTBoolean::GetGroundValue() const {
+    if (!m_isGround) {
+        cerr << "ERROR: attempted to read a ground value from a symbolic Boolean expression."
+             << endl;
+        exit(1);
+    }
+    return m_groundValue;
+}
 
 SMTBoolean::SMTBoolean()
     : m_expr(SMTFactory::makeBoolConst(false)),

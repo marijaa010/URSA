@@ -11,10 +11,11 @@ void yyerror(char *);
 "--"            return MINUSMINUS; 
 "<<="           return LSHIFTEQ; 
 ">>="           return RSHIFTEQ; 
-"+="            return PLUSEQ; 
-"-="            return MINUSEQ; 
-"*="            return MULTEQ; 
-"/="            return DIVEQ; 
+"+="            return PLUSEQ;
+"-="            return MINUSEQ;
+"*="            return MULTEQ;
+"/="            return DIVEQ;
+"%="            return MODEQ;
 "&="            return BITWISEANDEQ;  
 "|="            return BITWISEOREQ; 
 "^="            return BITWISEXOREQ; 
@@ -87,7 +88,7 @@ b[A-Za-z0-9_]* {
                  return BOOLEAN;
                }
 
-[-()<>=+*/;{}.,|&^~\[\]!] {
+[-()<>=+*/%;{}.,|&^~\[\]!] {
                 return *yytext;
              }
 

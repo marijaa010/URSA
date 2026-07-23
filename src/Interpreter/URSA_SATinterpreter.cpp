@@ -14,6 +14,9 @@ GNU General Public License for more details.
 **************************************************************************************/
 
 #include <iostream>
+#include <sstream>
+#include <cstdio>
+#include <cstdlib>
 #include "URSA_SATinterpreter.hpp"
 #include "SMT_Interpreter.hpp"
 #include "ursa.tab.hpp"
@@ -34,10 +37,11 @@ bool bDimacsOnly;
 bool bMapping;
 bool bCoherentLogicProofExport;
 bool bSMTMode;
-// Which SMT logic to emit when bSMTMode is on. Default QF_BV keeps existing
-// behaviour; QF_LIA emits integer arithmetic instead of bit-vectors.
 typedef enum { eLogicQF_BV, eLogicQF_LIA } eSMTLogic;
 eSMTLogic bSMTLogic;
+bool bSMTSolveMode;
+typedef enum { eSolverZ3, eSolverCVC5 } eSMTSolver;
+eSMTSolver bSMTSolver;
 Interpreter in;
 SMTInterpreter smtIn;
 
@@ -77,6 +81,8 @@ int main(int argc, char** argv) {
     bMapping=false;
     bSMTMode=false;
     bSMTLogic=eLogicQF_BV;
+    bSMTSolveMode=false;
+    bSMTSolver=eSolverZ3;
     URSASolver = eClasp;
 
     for(i=1;i<argc;i++) {
@@ -87,6 +93,12 @@ int main(int argc, char** argv) {
          }
          if(!strcmp(argv[i],"-smtlogic=QF_BV")) {
              bSMTMode = true; bSMTLogic = eLogicQF_BV; continue;
+         }
+         if(!strcmp(argv[i],"-smtsolve=z3")) {
+             bSMTMode = true; bSMTSolveMode = true; bSMTSolver = eSolverZ3; continue;
+         }
+         if(!strcmp(argv[i],"-smtsolve=cvc5")) {
+             bSMTMode = true; bSMTSolveMode = true; bSMTSolver = eSolverCVC5; continue;
          }
          switch(argv[i][1]) {
            case 'l':  if (sscanf(argv[i]+2,"%i",&len) == 1)  
@@ -119,8 +131,11 @@ int main(int argc, char** argv) {
                       cout << "-q - quite mode (models are not printed out)" << endl;
                       cout << "-m - prints mapping between URSA variables and SAT variables" << endl;
                       cout << "-s - selects an underlying solvers (e.g., -sargosat, -sclasp, -sminisat; defaulf is clasp)" << endl;
-                      cout << "-smt - emit SMT-LIB QF_BV instead of running a SAT solver" << endl;
-                      cout << "-smtlogic=QF_BV|QF_LIA - choose SMT-LIB logic (implies -smt; default QF_BV)" << endl << endl;
+                      cout << "-smt - emit SMT-LIB output instead of running a SAT solver (default logic: QF_BV)" << endl;
+                      cout << "-smtlogic=QF_BV|QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV)" << endl;
+                      cout << "-smtsolve=z3|cvc5 - emit SMT-LIB and pipe it to the chosen solver (z3 or cvc5)" << endl;
+                      cout << "                    (implies -smt; solver binary read from URSA_Z3 / URSA_CVC5 env vars," << endl;
+                      cout << "                     defaults 'z3' / 'cvc5' on PATH)" << endl << endl;
                       cout << "Example:" << endl;
                       cout << "./ursa -l10 < examples/CSP/queens.urs" << endl;
            default :  break;
@@ -130,6 +145,38 @@ int main(int argc, char** argv) {
 
     iVarCounter=0;
     // yydebug=1;
+
+    if (bSMTSolveMode) {
+      static ostringstream g_smtBuffer;
+      static streambuf* g_oldCoutBuf = cout.rdbuf(g_smtBuffer.rdbuf());
+      atexit([]() {
+        if (g_oldCoutBuf != nullptr) {
+          cout.rdbuf(g_oldCoutBuf);
+          g_oldCoutBuf = nullptr;
+        }
+        const char* envVar = (bSMTSolver == eSolverZ3) ? "URSA_Z3" : "URSA_CVC5";
+        const char* envValue = getenv(envVar);
+        string solverBinary = envValue ? envValue :
+                              (bSMTSolver == eSolverZ3 ? "z3" : "cvc5");
+        string cmd;
+        if (bSMTSolver == eSolverZ3) {
+          cmd = solverBinary + " -in";
+        } else {
+          cmd = solverBinary + " --lang smt2 --produce-models -";
+        }
+        FILE* pipe = popen(cmd.c_str(), "w");
+        if (!pipe) {
+          cerr << "ERROR: could not invoke SMT solver via command: " << cmd << endl;
+          return;
+        }
+        string content = g_smtBuffer.str();
+        fwrite(content.c_str(), 1, content.size(), pipe);
+        int status = pclose(pipe);
+        if (status != 0) {
+          cerr << "WARNING: SMT solver returned non-zero exit status: " << status << endl;
+        }
+      });
+    }
     yyparse();
 
     map<const string, nodeType *, lstr >::iterator it;

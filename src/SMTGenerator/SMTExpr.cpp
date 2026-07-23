@@ -7,20 +7,6 @@
 
 using namespace std;
 
-// ---------------------------------------------------------------------------
-// Hash-consing: structurally-identical SMTExpr nodes share a single instance.
-// Analogous to URSA's FormulaFactory.existingFormulas for the SAT path.
-//
-// The intern() routine takes a freshly-allocated candidate node; if the cache
-// already has a structurally-equal node, candidate is deleted and the cached
-// pointer is returned. Otherwise the candidate is inserted and returned.
-//
-// Equality compares: type, width, plus the type-specific fields. For composite
-// nodes, equality compares child *pointers* — which is safe precisely because
-// all child nodes have themselves been interned (so equal subtrees share
-// pointers).
-// ---------------------------------------------------------------------------
-
 namespace {
 
 struct SMTExprHash {
@@ -38,6 +24,7 @@ struct SMTExprHash {
             case BV_VAR:
             case BOOL_VAR:
             case INT_VAR:
+            case ARRAY_VAR:
                 h ^= std::hash<std::string>{}(e->varName) + 0x9e3779b9 + (h << 6) + (h >> 2);
                 break;
             default:
@@ -61,6 +48,10 @@ struct SMTExprEq {
             case BV_VAR:
             case BOOL_VAR:
             case INT_VAR:     return a->varName == b->varName;
+            case ARRAY_VAR:   return a->varName == b->varName
+                                   && a->indexWidth == b->indexWidth
+                                   && a->indexWidth2 == b->indexWidth2
+                                   && a->is2D == b->is2D;
             default:
                 if (a->children.size() != b->children.size()) return false;
                 for (size_t i = 0; i < a->children.size(); i++)
@@ -121,6 +112,16 @@ static void printBinary(ostream& out, const char* op, const SMTExpr* e) {
     out << ")";
 }
 
+static void printTernary(ostream& out, const char* op, const SMTExpr* e) {
+    out << "(" << op << " ";
+    e->children[0]->print(out);
+    out << " ";
+    e->children[1]->print(out);
+    out << " ";
+    e->children[2]->print(out);
+    out << ")";
+}
+
 static void printUnary(ostream& out, const char* op, const SMTExpr* e) {
     out << "(" << op << " ";
     e->children[0]->print(out);
@@ -145,6 +146,9 @@ void SMTExpr::print(ostream& out) const {
         case BV_SHL:      printBinary(out, "bvshl", this); break;
         case BV_LSHR:     printBinary(out, "bvlshr", this); break;
 
+        case BV_UDIV:     printBinary(out, "bvudiv", this); break;
+        case BV_UREM:     printBinary(out, "bvurem", this); break;
+
         case BV_EQ:       printBinary(out, "=", this); break;
         case BV_ULT:      printBinary(out, "bvult", this); break;
         case BV_ULE:      printBinary(out, "bvule", this); break;
@@ -159,17 +163,8 @@ void SMTExpr::print(ostream& out) const {
         case BOOL_NOT:    printUnary(out, "not", this); break;
         case BOOL_EQ:     printBinary(out, "=", this); break;
 
-        case SMT_ITE:
-            out << "(ite ";
-            children[0]->print(out);
-            out << " ";
-            children[1]->print(out);
-            out << " ";
-            children[2]->print(out);
-            out << ")";
-            break;
+        case SMT_ITE:     printTernary(out, "ite", this); break;
 
-        // LIA nodes — plain integer arithmetic in SMT-LIB.
         case INT_CONST:   out << constValue; break;
         case INT_VAR:     printSymbol(out, varName); break;
         case INT_ADD:     printBinary(out, "+", this); break;
@@ -184,6 +179,10 @@ void SMTExpr::print(ostream& out) const {
         case INT_GE:      printBinary(out, ">=", this); break;
         case INT_EQ:      printBinary(out, "=", this); break;
 
+        case ARRAY_VAR:    printSymbol(out, varName); break;
+        case ARRAY_SELECT: printBinary(out, "select", this); break;
+        case ARRAY_STORE:  printTernary(out, "store", this); break;
+
         default:
             out << ";; UNKNOWN_TYPE";
             break;
@@ -196,8 +195,6 @@ size_t SMTExpr::treeSize() const {
     return total;
 }
 
-// Collect the arguments of a nested associative operator by flattening the
-// right-nested spine URSA builds through repeated binary `&`/`|` calls.
 static void gatherAssociative(const SMTExpr* e, SMTNodeType op,
                               std::vector<const SMTExpr*>& out) {
     if (e->type == op) {
@@ -207,11 +204,6 @@ static void gatherAssociative(const SMTExpr* e, SMTNodeType op,
         out.push_back(e);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Emit context: when non-null, tells the compact / pretty printers to emit
-// a let-name instead of the full expression for shared subexpressions.
-// ---------------------------------------------------------------------------
 
 namespace {
 struct EmitCtx {
@@ -223,23 +215,18 @@ struct EmitCtx {
 };
 }  // namespace
 
-// Forward declarations for context-aware emitters (defined further below).
 static void emitCompact(std::ostream& out, const SMTExpr* e, const EmitCtx* ctx);
 static void emitPretty(std::ostream& out, const SMTExpr* e, int indent,
                        const EmitCtx* ctx);
 
 void SMTExpr::printPretty(std::ostream& out, int indent) const {
-    emitPretty(out, this, indent, /*ctx=*/nullptr);
+    emitPretty(out, this, indent, nullptr);
 }
 
-// Compact emitter — same as SMTExpr::print but honors ctx (emits `s7` for
-// a let-bound node instead of its full expression).
 static void emitCompact(std::ostream& out, const SMTExpr* e, const EmitCtx* ctx) {
     if (ctx) {
         if (const std::string* nm = ctx->lookup(e)) { out << *nm; return; }
     }
-    // Reproduce the logic of SMTExpr::print but recursing through emitCompact
-    // so nested children also honor ctx.
     switch (e->type) {
         case BV_CONST:    out << SMTExpr::formatBvConst(e->constValue, e->width); return;
         case BV_VAR:      printSymbol(out, e->varName); return;
@@ -247,9 +234,9 @@ static void emitCompact(std::ostream& out, const SMTExpr* e, const EmitCtx* ctx)
         case BOOL_VAR:    printSymbol(out, e->varName); return;
         case INT_CONST:   out << e->constValue; return;
         case INT_VAR:     printSymbol(out, e->varName); return;
+        case ARRAY_VAR:   printSymbol(out, e->varName); return;
         default: break;
     }
-    // Everything else is (op child*) with 1..3 children.
     const char* op = nullptr;
     switch (e->type) {
         case BV_ADD:      op = "bvadd"; break;
@@ -262,6 +249,8 @@ static void emitCompact(std::ostream& out, const SMTExpr* e, const EmitCtx* ctx)
         case BV_NOT:      op = "bvnot"; break;
         case BV_SHL:      op = "bvshl"; break;
         case BV_LSHR:     op = "bvlshr"; break;
+        case BV_UDIV:     op = "bvudiv"; break;
+        case BV_UREM:     op = "bvurem"; break;
         case BV_EQ:       op = "="; break;
         case BV_ULT:      op = "bvult"; break;
         case BV_ULE:      op = "bvule"; break;
@@ -283,6 +272,8 @@ static void emitCompact(std::ostream& out, const SMTExpr* e, const EmitCtx* ctx)
         case INT_GT:      op = ">"; break;
         case INT_GE:      op = ">="; break;
         case INT_EQ:      op = "="; break;
+        case ARRAY_SELECT: op = "select"; break;
+        case ARRAY_STORE:  op = "store"; break;
         case SMT_ITE:     op = "ite"; break;
         default:          out << ";; UNKNOWN_TYPE"; return;
     }
@@ -294,12 +285,8 @@ static void emitCompact(std::ostream& out, const SMTExpr* e, const EmitCtx* ctx)
     out << ")";
 }
 
-// Pretty (multiline) emitter — flatten associative AND/OR/XOR spines and put
-// each conjunct on its own line. All other constructors fall back to compact.
 static void emitPretty(std::ostream& out, const SMTExpr* e, int indent,
                        const EmitCtx* ctx) {
-    // If this node is a let-bound name in the current context, honor that
-    // before doing anything else.
     if (ctx) {
         if (const std::string* nm = ctx->lookup(e)) { out << *nm; return; }
     }
@@ -321,37 +308,26 @@ static void emitPretty(std::ostream& out, const SMTExpr* e, int indent,
     emitCompact(out, e, ctx);
 }
 
-// ---------------------------------------------------------------------------
-// Let-binding factorization: find shared subexpressions and print
-// `(let ((s0 e0)) (let ((s1 e1)) ... body))` where e_i may reference s_j (j<i).
-// ---------------------------------------------------------------------------
-
 static bool isLeafForSharing(const SMTExpr* e) {
-    // These are already atomic in SMT-LIB — naming them saves no space.
     return e->type == BV_CONST || e->type == BV_VAR ||
            e->type == BOOL_CONST || e->type == BOOL_VAR ||
-           e->type == INT_CONST || e->type == INT_VAR;
+           e->type == INT_CONST || e->type == INT_VAR ||
+           e->type == ARRAY_VAR;
 }
 
-// Count how many times each subexpression is referenced when walking `root`.
-// Uses the shared-pointer identity established by hash-consing.
 static void countReferences(const SMTExpr* root,
                             std::unordered_map<const SMTExpr*, size_t>& refs) {
-    // Iterative DFS to avoid stack overflow on deep URSA formulas.
     std::vector<const SMTExpr*> stack{root};
     while (!stack.empty()) {
         const SMTExpr* e = stack.back();
         stack.pop_back();
         refs[e]++;
-        // Only descend once — subsequent occurrences just bump the counter.
         if (refs[e] == 1) {
             for (const SMTExpr* ch : e->children) stack.push_back(ch);
         }
     }
 }
 
-// Topological order: children before parents. Ensures a name may reference
-// earlier names in the nested let chain.
 static void topoSort(const SMTExpr* e,
                      const std::unordered_set<const SMTExpr*>& shared,
                      std::unordered_set<const SMTExpr*>& visited,
@@ -365,8 +341,6 @@ static void topoSort(const SMTExpr* e,
 }
 
 void SMTExpr::printWithLet(std::ostream& out, int indent) const {
-    // Step 1: count references. Only composite nodes with count >= 2 are
-    // interesting candidates for let-binding.
     std::unordered_map<const SMTExpr*, size_t> refs;
     countReferences(this, refs);
 
@@ -376,30 +350,24 @@ void SMTExpr::printWithLet(std::ostream& out, int indent) const {
     }
 
     if (shared.empty()) {
-        emitPretty(out, this, indent, /*ctx=*/nullptr);
+        emitPretty(out, this, indent, nullptr);
         return;
     }
 
-    // Step 2: topological sort so `s1 = (op s0 ...)` sees s0 already defined.
     std::vector<const SMTExpr*> order;
     std::unordered_set<const SMTExpr*> visited;
     topoSort(this, shared, visited, order);
 
-    // Step 3: assign names.
     EmitCtx ctx;
     for (size_t i = 0; i < order.size(); i++) {
         ctx.letName[order[i]] = "$s" + std::to_string(i);
     }
 
-    // Step 4: emit nested lets. Each level increases the indent by 2.
     int curIndent = indent;
     for (size_t i = 0; i < order.size(); i++) {
         const SMTExpr* def = order[i];
         std::string pad(curIndent, ' ');
         out << "(let ((" << ctx.letName[def] << " ";
-        // Emit the definition WITHOUT the current node's own name (avoid
-        // self-reference), but WITH names of previously-defined ones. We do
-        // this by temporarily removing this node's entry before recursing.
         std::string myName = ctx.letName[def];
         ctx.letName.erase(def);
         emitCompact(out, def, &ctx);
@@ -408,10 +376,8 @@ void SMTExpr::printWithLet(std::ostream& out, int indent) const {
         curIndent += 2;
     }
 
-    // Step 5: emit the body with all names active. Break lines for AND/OR.
     emitPretty(out, this, curIndent, &ctx);
 
-    // Step 6: close all the opened parentheses.
     for (size_t i = 0; i < order.size(); i++) out << ")";
 }
 
@@ -474,6 +440,8 @@ SMTExpr* SMTFactory::makeBvNot(SMTExpr* a) { return makeUn(BV_NOT, a, a->width);
 
 SMTExpr* SMTFactory::makeBvShl(SMTExpr* a, SMTExpr* b)  { checkWidths("bvshl",  a, b); return makeBin(BV_SHL,  a, b, a->width); }
 SMTExpr* SMTFactory::makeBvLshr(SMTExpr* a, SMTExpr* b) { checkWidths("bvlshr", a, b); return makeBin(BV_LSHR, a, b, a->width); }
+SMTExpr* SMTFactory::makeBvUdiv(SMTExpr* a, SMTExpr* b) { checkWidths("bvudiv", a, b); return makeBin(BV_UDIV, a, b, a->width); }
+SMTExpr* SMTFactory::makeBvUrem(SMTExpr* a, SMTExpr* b) { checkWidths("bvurem", a, b); return makeBin(BV_UREM, a, b, a->width); }
 
 SMTExpr* SMTFactory::makeBvEq(SMTExpr* a, SMTExpr* b)  { checkWidths("=",     a, b); return makeBin(BV_EQ,  a, b, 0); }
 SMTExpr* SMTFactory::makeBvUlt(SMTExpr* a, SMTExpr* b) { checkWidths("bvult", a, b); return makeBin(BV_ULT, a, b, 0); }
@@ -505,14 +473,9 @@ SMTExpr* SMTFactory::makeIte(SMTExpr* cond, SMTExpr* thenE, SMTExpr* elseE) {
     return intern(e);
 }
 
-// -----------------------------------------------------------------------
-// Integer (QF_LIA) factory. Width is not meaningful for integers, so all
-// nodes carry width 0; only the type distinguishes them from Bool nodes.
-// -----------------------------------------------------------------------
-
 SMTExpr* SMTFactory::makeIntConst(uint64_t value) {
     SMTExpr* e = new SMTExpr(INT_CONST, 0);
-    e->constValue = value;   // stored raw; SMT-LIB emits decimal
+    e->constValue = value;
     return intern(e);
 }
 SMTExpr* SMTFactory::makeIntVar(const string& name) {
@@ -531,6 +494,42 @@ SMTExpr* SMTFactory::makeIntLe(SMTExpr* a, SMTExpr* b)  { return makeBin(INT_LE,
 SMTExpr* SMTFactory::makeIntGt(SMTExpr* a, SMTExpr* b)  { return makeBin(INT_GT, a, b, 0); }
 SMTExpr* SMTFactory::makeIntGe(SMTExpr* a, SMTExpr* b)  { return makeBin(INT_GE, a, b, 0); }
 SMTExpr* SMTFactory::makeIntEq(SMTExpr* a, SMTExpr* b)  { return makeBin(INT_EQ, a, b, 0); }
+
+SMTExpr* SMTFactory::makeArrayVar(const string& name,
+                                  int indexWidth, int elementWidth) {
+    SMTExpr* e = new SMTExpr(ARRAY_VAR, elementWidth);
+    e->varName = name;
+    e->indexWidth = indexWidth;
+    e->indexWidth2 = 0;
+    e->is2D = false;
+    return intern(e);
+}
+
+SMTExpr* SMTFactory::makeArrayVar2D(const string& name,
+                                    int indexWidth1, int indexWidth2,
+                                    int elementWidth) {
+    SMTExpr* e = new SMTExpr(ARRAY_VAR, elementWidth);
+    e->varName = name;
+    e->indexWidth = indexWidth1;
+    e->indexWidth2 = indexWidth2;
+    e->is2D = true;
+    return intern(e);
+}
+
+SMTExpr* SMTFactory::makeArraySelect(SMTExpr* array, SMTExpr* index) {
+    SMTExpr* e = new SMTExpr(ARRAY_SELECT, array->width);
+    e->children.push_back(array);
+    e->children.push_back(index);
+    return intern(e);
+}
+
+SMTExpr* SMTFactory::makeArrayStore(SMTExpr* array, SMTExpr* index, SMTExpr* value) {
+    SMTExpr* e = new SMTExpr(ARRAY_STORE, array->width);
+    e->children.push_back(array);
+    e->children.push_back(index);
+    e->children.push_back(value);
+    return intern(e);
+}
 
 void SMTFactory::clear() {
     auto& c = cache();

@@ -51,7 +51,17 @@ Options:
 
 -smt - emit SMT-LIB QF_BV instead of running a SAT solver
 
--smtlogic=QF_BV|QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV)
+-smtlogic=QF_BV or QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV)
+
+-smtsolve=z3 or cvc5 - emit SMT-LIB and pipe it to the chosen solver (z3 or cvc5).
+   Implies -smt. Solver binary path is read from URSA_Z3 or URSA_CVC5 environment
+   variables; if unset, 'z3' / 'cvc5' from PATH are used. Composes with
+   -smtlogic (e.g., -smtlogic=QF_LIA -smtsolve=z3).
+
+The SMT solvers (Z3, cvc5) are not bundled in this repository: they use their own
+build systems (CMake) and would inflate the repo by hundreds of MB. Install them
+once via `brew install z3` / a `cvc5` release archive, set `URSA_Z3` / `URSA_CVC5`
+to their paths (or place them on `$PATH`), and `-smtsolve` will find them.
 
 Example:
 
@@ -93,6 +103,8 @@ arithmetic:
 - Shift operators (`<<`, `>>`)
 - Nonlinear multiplication of two symbolic variables (`x * y`); only
   multiplication by a ground constant is permitted
+- Division and modulo by a symbolic value (`x / y`, `x % y`); only
+  division and modulo by a ground constant are permitted
 
 Semantic differences from QF_BV. URSA programs written for QF_BV assume
 modular arithmetic on fixed-width unsigned values. In QF_LIA the same
@@ -105,3 +117,43 @@ solution space in two ways:
 - Signed comparisons apply: `nx < 0` may be true for negative `nx`. Programs
   that rely on the unsigned domain should add explicit non-negativity
   constraints (e.g., `assert(nx >= 0)`) when run in QF_LIA mode.
+
+### Arrays with symbolic indices
+
+URSA arrays that are only ever indexed by ground constants (e.g.
+`nA[3] = 5`) continue to be emitted as flat scalar cells `nA_3_`, `nA_4_`,
+etc. No new syntax and no CLI flag are required.
+
+Once an array is accessed with a *symbolic* index at any point in the
+program, URSA switches that array to an SMT-LIB `(Array ...)` value.
+Ground-index writes made earlier are re-emitted as
+`(assert (= (select nA k) v))`. Symbolic reads become `(select nA i)` and
+symbolic writes become new versions of the array via `(store nA i v)`
+(static single assignment). Two-dimensional arrays with symbolic indices
+use nested Array sorts. The emitted logic is extended automatically:
+
+| base logic | with arrays |
+|------------|-------------|
+| QF_BV      | QF_ABV      |
+| QF_LIA     | QF_ALIA     |
+
+Example - find `nj` such that `nA[nj] == 30`:
+
+```
+nA[0] = 10;
+nA[1] = 20;
+nA[2] = 30;
+nA[3] = 40;
+assert(nA[nj] == 30 && nj < 4);
+```
+
+Example - symbolic write, then search:
+
+```
+for (ni = 0; ni < 5; ni++) nA[ni] = ni * ni;
+nA[nj] = 999;
+assert(nA[3] == 999 && nj < 5);
+```
+
+The SAT path does not support symbolic indexing; use `-smt` or
+`-smtlogic=QF_LIA` for programs that rely on it.

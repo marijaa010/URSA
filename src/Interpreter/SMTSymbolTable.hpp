@@ -43,6 +43,8 @@ public:
   bool GetAccessedBoolVar(const std::string& sVarName);
 
   void collectFreeVarDeclarations(std::ostream& out) const;
+  void collectArrayInitAssertions(std::ostream& out) const;
+  bool HasMaterializedArrays() const { return !SymArrayBase.empty(); }
   void printIndependentNames(std::ostream& out) const;
 
 private:
@@ -50,6 +52,12 @@ private:
   std::map<std::string, SMTBoolean*> SymBool;
   std::map<std::string, bool> AccessedInt;
   std::map<std::string, bool> AccessedBool;
+
+  std::map<std::string, SMTExpr*> SymArrayBase;
+  std::map<std::string, SMTExpr*> SymArrayCurrent;
+
+  void materializeArray1D(const std::string& sVarName);
+  void materializeArray2D(const std::string& sVarName);
 };
 
 #endif

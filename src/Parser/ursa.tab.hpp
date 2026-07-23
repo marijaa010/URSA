@@ -82,30 +82,31 @@ extern int yydebug;
     MINUSEQ = 283,                 /* MINUSEQ  */
     MULTEQ = 284,                  /* MULTEQ  */
     DIVEQ = 285,                   /* DIVEQ  */
-    ANDEQ = 286,                   /* ANDEQ  */
-    OREQ = 287,                    /* OREQ  */
-    XOREQ = 288,                   /* XOREQ  */
-    LSHIFTEQ = 289,                /* LSHIFTEQ  */
-    RSHIFTEQ = 290,                /* RSHIFTEQ  */
-    BITWISEANDEQ = 291,            /* BITWISEANDEQ  */
-    BITWISEOREQ = 292,             /* BITWISEOREQ  */
-    BITWISEXOREQ = 293,            /* BITWISEXOREQ  */
-    LOGICALXOR = 294,              /* LOGICALXOR  */
-    LOGICALOR = 295,               /* LOGICALOR  */
-    LOGICALAND = 296,              /* LOGICALAND  */
-    GE = 297,                      /* GE  */
-    LE = 298,                      /* LE  */
-    EQ = 299,                      /* EQ  */
-    NE = 300,                      /* NE  */
-    LSHIFT = 301,                  /* LSHIFT  */
-    RSHIFT = 302,                  /* RSHIFT  */
-    PLUSPLUS = 303,                /* PLUSPLUS  */
-    MINUSMINUS = 304,              /* MINUSMINUS  */
-    UMINUS = 305,                  /* UMINUS  */
-    ITE = 306,                     /* ITE  */
-    BOOL2NUM = 307,                /* BOOL2NUM  */
-    NUM2BOOL = 308,                /* NUM2BOOL  */
-    SGN = 309                      /* SGN  */
+    MODEQ = 286,                   /* MODEQ  */
+    ANDEQ = 287,                   /* ANDEQ  */
+    OREQ = 288,                    /* OREQ  */
+    XOREQ = 289,                   /* XOREQ  */
+    LSHIFTEQ = 290,                /* LSHIFTEQ  */
+    RSHIFTEQ = 291,                /* RSHIFTEQ  */
+    BITWISEANDEQ = 292,            /* BITWISEANDEQ  */
+    BITWISEOREQ = 293,             /* BITWISEOREQ  */
+    BITWISEXOREQ = 294,            /* BITWISEXOREQ  */
+    LOGICALXOR = 295,              /* LOGICALXOR  */
+    LOGICALOR = 296,               /* LOGICALOR  */
+    LOGICALAND = 297,              /* LOGICALAND  */
+    GE = 298,                      /* GE  */
+    LE = 299,                      /* LE  */
+    EQ = 300,                      /* EQ  */
+    NE = 301,                      /* NE  */
+    LSHIFT = 302,                  /* LSHIFT  */
+    RSHIFT = 303,                  /* RSHIFT  */
+    PLUSPLUS = 304,                /* PLUSPLUS  */
+    MINUSMINUS = 305,              /* MINUSMINUS  */
+    UMINUS = 306,                  /* UMINUS  */
+    ITE = 307,                     /* ITE  */
+    BOOL2NUM = 308,                /* BOOL2NUM  */
+    NUM2BOOL = 309,                /* NUM2BOOL  */
+    SGN = 310                      /* SGN  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -121,7 +122,7 @@ union YYSTYPE
     char* sName;                /* symbol table index */
     nodeType *nPtr;             /* node pointer */
 
-#line 125 "ursa.tab.hpp"
+#line 126 "ursa.tab.hpp"
 
 };
 typedef union YYSTYPE YYSTYPE;

@@ -19,11 +19,13 @@ public:
     int getWidth() const { return m_width; }
 
     bool IsGroundNumber() const { return m_isGround; }
-    uint64_t GetGroundValueUnsigned() const { return m_groundValue; }
+    uint64_t GetGroundValueUnsigned() const;
 
     SMTNumber operator+(const SMTNumber& other) const;
     SMTNumber operator-(const SMTNumber& other) const;
     SMTNumber operator*(const SMTNumber& other) const;
+    SMTNumber operator/(const SMTNumber& other) const;
+    SMTNumber operator%(const SMTNumber& other) const;
     SMTNumber operator&(const SMTNumber& other) const;
     SMTNumber operator|(const SMTNumber& other) const;
     SMTNumber operator^(const SMTNumber& other) const;
