@@ -53,35 +53,78 @@ Options:
 
 -smtlogic=QF_BV or QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV)
 
--smtsolve=z3 or cvc5 - emit SMT-LIB and pipe it to the chosen solver (z3 or cvc5).
-   Implies -smt. Solver binary path is read from URSA_Z3 or URSA_CVC5 environment
+-smtsolve=z3 or cvc5 - drive the chosen SMT solver internally and print models
+   formatted the same as the SAT path. For `assert_all`, URSA enumerates all
+   satisfying models by adding blocking clauses between solver calls. Implies
+   -smt. Solver binary path is read from URSA_Z3 or URSA_CVC5 environment
    variables; if unset, 'z3' / 'cvc5' from PATH are used. Composes with
    -smtlogic (e.g., -smtlogic=QF_LIA -smtsolve=z3).
 
-The SMT solvers (Z3, cvc5) are not bundled in this repository: they use their own
-build systems (CMake) and would inflate the repo by hundreds of MB. Install them
-once via `brew install z3` / a `cvc5` release archive, set `URSA_Z3` / `URSA_CVC5`
-to their paths (or place them on `$PATH`), and `-smtsolve` will find them.
+-smtout=<path> - write SMT-LIB output to the given file.
+   Implies -smt. Composes with -smtlogic, but cannot be combined with -smtsolve.
 
 Example:
 
-  ./ursa -l10 < examples/CSP/queens.urs
+./ursa -l10 < ../examples/CSP/queens1.urs
 
 NOTA BENE: If URSA is used with clasp as an underlying SAT solver and if some propositional
-variable is irrelevant for the asserted constraint, then its different values are not 
+variable is irrelevant for the asserted constraint, then its different values are not
 considered within the set of all models (so the set of models may not be as expected).
+
+The SMT solvers (Z3, cvc5) are not bundled in this repository: they use their own
+build systems (CMake) and would inflate the repo by hundreds of MB. Install them
+once, place them on `$PATH` (or point `URSA_Z3` / `URSA_CVC5` at their binaries),
+and `-smtsolve` will find them.
+
+**Z3:**
+
+- macOS:   `brew install z3`
+- Linux:   `sudo apt install z3` (Debian/Ubuntu) or `sudo dnf install z3` (Fedora)
+- Windows: download the release archive from
+           https://github.com/Z3Prover/z3/releases (e.g. `z3-*-x64-win.zip`),
+           extract, and add `bin\z3.exe` to `PATH`.
+
+**cvc5** (no package manager on any platform, use the official release archives
+from https://github.com/cvc5/cvc5/releases):
+
+- macOS:   download `cvc5-macOS-arm64-static-gpl.zip` (Apple Silicon) or
+           `cvc5-macOS-x86_64-static-gpl.zip` (Intel), extract, and either place
+           `bin/cvc5` on `$PATH` or point `URSA_CVC5` at the full path.
+- Linux:   download `cvc5-Linux-x86_64-static-gpl.zip`, extract, place
+           `bin/cvc5` on `$PATH`.
+- Windows: download `cvc5-Win64-x86_64-static-gpl.zip`, extract, add `bin\`
+           to `PATH`.
+
+Example: point URSA at custom install locations without touching `PATH`:
+
+  export URSA_Z3=$HOME/tools/z3-4.13.0/bin/z3
+  export URSA_CVC5=$HOME/tools/cvc5-1.3.4/bin/cvc5
+  ./ursa -smtsolve=cvc5 < ../examples/Simple/system2unknowns.urs
 
 ## SMT-LIB output
 
-With the `-smt` flag URSA does not run a SAT solver, instead it bit-blasts the
-constraints into an SMT-LIB QF_BV (Quantifier-Free Bit-Vector) formula and prints
-it to standard output. The resulting `.smt2` file can be fed to any QF_BV-capable
-SMT solver (Z3, Boolector, CVC5, ...).
+With the `-smt` flag URSA does not run a SAT solver. Instead it translates the
+constraints into an SMT-LIB formula and prints it to standard output. The target
+logic is chosen with `-smtlogic`:
 
-Example — solve `examples/Simple/system2unknowns.urs` with Z3:
+- `QF_BV` (default) - bit-blasts the constraints into fixed-width bit-vectors.
+- `QF_LIA` - emits linear integer arithmetic over unbounded `Int` values.
 
-  ./ursa -smt < ../examples/Simple/system2unknowns.urs | grep -v '^\*' > out.smt2
+If any array is accessed with a symbolic index, the logic is automatically
+extended to `QF_ABV` or `QF_ALIA` accordingly (see below).
+
+The resulting `.smt2` file can be fed to any SMT solver that supports the
+chosen logic (Z3, cvc5, Boolector for QF_BV, ...).
+
+Example: emit SMT-LIB to a file and solve `examples/Simple/system2unknowns.urs`
+with Z3:
+
+  ./ursa -smtout=out.smt2 < ../examples/Simple/system2unknowns.urs  
   z3 out.smt2
+
+Or let URSA pipe directly to the solver without writing a file:
+
+  ./ursa -smtsolve=z3 < ../examples/Simple/system2unknowns.urs
 
 ### Linear Integer Arithmetic mode (QF_LIA)
 
@@ -126,11 +169,6 @@ etc. No new syntax and no CLI flag are required.
 
 Once an array is accessed with a *symbolic* index at any point in the
 program, URSA switches that array to an SMT-LIB `(Array ...)` value.
-Ground-index writes made earlier are re-emitted as
-`(assert (= (select nA k) v))`. Symbolic reads become `(select nA i)` and
-symbolic writes become new versions of the array via `(store nA i v)`
-(static single assignment). Two-dimensional arrays with symbolic indices
-use nested Array sorts. The emitted logic is extended automatically:
 
 | base logic | with arrays |
 |------------|-------------|

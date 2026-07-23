@@ -13,6 +13,10 @@ extern bool bQuiet;
 
 typedef enum { eLogicQF_BV, eLogicQF_LIA } eSMTLogic;
 extern eSMTLogic bSMTLogic;
+extern bool bSMTSolveMode;
+
+bool bSMTAssertAll = false;
+bool bSMTHasOptimize = false;
 
 
 static uint64_t parseIntLiteral(const char* s) {
@@ -298,7 +302,9 @@ bool SMTInterpreter::Solve(nodeType *p, bool bAllSolutions) {
     return SolveConstraint(p, bAllSolutions);
 }
 
-bool SMTInterpreter::SolveConstraint(nodeType *p, bool /*bAllSolutions*/) {
+bool SMTInterpreter::SolveConstraint(nodeType *p, bool bAllSolutions) {
+    if (bAllSolutions) bSMTAssertAll = true;
+    if (m_hasOptimization) bSMTHasOptimize = true;
     double dTime_parsing = m_Timer.ElapsedTime();
     m_Timer.StartMeasuringTime();
 
@@ -357,11 +363,13 @@ bool SMTInterpreter::SolveConstraint(nodeType *p, bool /*bAllSolutions*/) {
              << " " << m_optVarName << ")" << endl;
     }
     cout << endl;
-    cout << "(check-sat)" << endl;
-    if (m_hasOptimization) {
-        cout << "(get-objectives)" << endl;
+    if (!bSMTSolveMode) {
+        cout << "(check-sat)" << endl;
+        if (m_hasOptimization) {
+            cout << "(get-objectives)" << endl;
+        }
+        cout << "(get-model)" << endl;
     }
-    cout << "(get-model)" << endl;
 
     double dTime_generation = m_Timer.ElapsedTime();
     if (!bQuiet) {

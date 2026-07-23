@@ -14,9 +14,15 @@ GNU General Public License for more details.
 **************************************************************************************/
 
 #include <iostream>
+#include <fstream>
 #include <sstream>
+#include <vector>
+#include <utility>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <unistd.h>
+#include <sys/wait.h>
 #include "URSA_SATinterpreter.hpp"
 #include "SMT_Interpreter.hpp"
 #include "ursa.tab.hpp"
@@ -42,12 +48,15 @@ eSMTLogic bSMTLogic;
 bool bSMTSolveMode;
 typedef enum { eSolverZ3, eSolverCVC5 } eSMTSolver;
 eSMTSolver bSMTSolver;
+const char* sSMTOutPath;
 Interpreter in;
 SMTInterpreter smtIn;
 
 unsigned int iVarCounter;
 
 extern int yyparse ();
+extern bool bSMTAssertAll;
+extern bool bSMTHasOptimize;
 
 void ClearCommand(nodeType *p) {
     int i;
@@ -83,6 +92,7 @@ int main(int argc, char** argv) {
     bSMTLogic=eLogicQF_BV;
     bSMTSolveMode=false;
     bSMTSolver=eSolverZ3;
+    sSMTOutPath=nullptr;
     URSASolver = eClasp;
 
     for(i=1;i<argc;i++) {
@@ -99,6 +109,9 @@ int main(int argc, char** argv) {
          }
          if(!strcmp(argv[i],"-smtsolve=cvc5")) {
              bSMTMode = true; bSMTSolveMode = true; bSMTSolver = eSolverCVC5; continue;
+         }
+         if(!strncmp(argv[i],"-smtout=",8)) {
+             bSMTMode = true; sSMTOutPath = argv[i] + 8; continue;
          }
          switch(argv[i][1]) {
            case 'l':  if (sscanf(argv[i]+2,"%i",&len) == 1)  
@@ -135,7 +148,9 @@ int main(int argc, char** argv) {
                       cout << "-smtlogic=QF_BV|QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV)" << endl;
                       cout << "-smtsolve=z3|cvc5 - emit SMT-LIB and pipe it to the chosen solver (z3 or cvc5)" << endl;
                       cout << "                    (implies -smt; solver binary read from URSA_Z3 / URSA_CVC5 env vars," << endl;
-                      cout << "                     defaults 'z3' / 'cvc5' on PATH)" << endl << endl;
+                      cout << "                     defaults 'z3' / 'cvc5' on PATH)" << endl;
+                      cout << "-smtout=<path> - write clean SMT-LIB to the given file (implies -smt)." << endl;
+                      cout << "                 Banner and stats stay on stdout/stderr." << endl << endl;
                       cout << "Example:" << endl;
                       cout << "./ursa -l10 < examples/CSP/queens.urs" << endl;
            default :  break;
@@ -146,6 +161,20 @@ int main(int argc, char** argv) {
     iVarCounter=0;
     // yydebug=1;
 
+    if (sSMTOutPath != nullptr && bSMTSolveMode) {
+      cerr << "ERROR: -smtout and -smtsolve cannot be combined." << endl;
+      return 1;
+    }
+
+    if (sSMTOutPath != nullptr) {
+      static ofstream smtOutFile(sSMTOutPath);
+      if (!smtOutFile.is_open()) {
+        cerr << "ERROR: could not open " << sSMTOutPath << " for writing." << endl;
+        return 1;
+      }
+      cout.rdbuf(smtOutFile.rdbuf());
+    }
+
     if (bSMTSolveMode) {
       static ostringstream g_smtBuffer;
       static streambuf* g_oldCoutBuf = cout.rdbuf(g_smtBuffer.rdbuf());
@@ -154,26 +183,237 @@ int main(int argc, char** argv) {
           cout.rdbuf(g_oldCoutBuf);
           g_oldCoutBuf = nullptr;
         }
+        string buffer = g_smtBuffer.str();
+
+        if (buffer.find("(declare-fun") == string::npos) {
+          cout << buffer;
+          return;
+        }
+
+        vector<pair<string,string>> freeVars;
+        {
+          istringstream iss(buffer);
+          string line;
+          while (getline(iss, line)) {
+            if (line.compare(0, 13, "(declare-fun ") != 0) continue;
+            size_t nameStart = 13;
+            size_t nameEnd = line.find(' ', nameStart);
+            if (nameEnd == string::npos) continue;
+            string name = line.substr(nameStart, nameEnd - nameStart);
+            size_t sortStart = line.find("()", nameEnd);
+            if (sortStart == string::npos) continue;
+            sortStart += 2;
+            while (sortStart < line.size() && line[sortStart] == ' ') sortStart++;
+            size_t sortEnd = line.size();
+            while (sortEnd > sortStart && line[sortEnd - 1] != ')') sortEnd--;
+            if (sortEnd == sortStart) continue;
+            string sort = line.substr(sortStart, sortEnd - sortStart - 1);
+            if (sort.find("Array") != string::npos) continue;
+            freeVars.push_back(make_pair(name, sort));
+          }
+        }
+
         const char* envVar = (bSMTSolver == eSolverZ3) ? "URSA_Z3" : "URSA_CVC5";
         const char* envValue = getenv(envVar);
         string solverBinary = envValue ? envValue :
                               (bSMTSolver == eSolverZ3 ? "z3" : "cvc5");
-        string cmd;
-        if (bSMTSolver == eSolverZ3) {
-          cmd = solverBinary + " -in";
-        } else {
-          cmd = solverBinary + " --lang smt2 --produce-models -";
-        }
-        FILE* pipe = popen(cmd.c_str(), "w");
-        if (!pipe) {
-          cerr << "ERROR: could not invoke SMT solver via command: " << cmd << endl;
+
+        int inPipe[2], outPipe[2];
+        if (pipe(inPipe) < 0 || pipe(outPipe) < 0) {
+          cerr << "ERROR: pipe() failed." << endl;
           return;
         }
-        string content = g_smtBuffer.str();
-        fwrite(content.c_str(), 1, content.size(), pipe);
-        int status = pclose(pipe);
-        if (status != 0) {
-          cerr << "WARNING: SMT solver returned non-zero exit status: " << status << endl;
+        pid_t pid = fork();
+        if (pid < 0) {
+          cerr << "ERROR: fork() failed." << endl;
+          return;
+        }
+        if (pid == 0) {
+          dup2(inPipe[0], STDIN_FILENO);
+          dup2(outPipe[1], STDOUT_FILENO);
+          close(inPipe[0]); close(inPipe[1]);
+          close(outPipe[0]); close(outPipe[1]);
+          if (bSMTSolver == eSolverZ3) {
+            execlp(solverBinary.c_str(), solverBinary.c_str(), "-in", (char*)nullptr);
+          } else {
+            execlp(solverBinary.c_str(), solverBinary.c_str(),
+                   "--lang", "smt2", "--produce-models", "--incremental",
+                   "-", (char*)nullptr);
+          }
+          _exit(127);
+        }
+        close(inPipe[0]);
+        close(outPipe[1]);
+        int solverIn = inPipe[1];
+        int solverOut = outPipe[0];
+
+        auto writeAll = [&](const string& s) {
+          const char* p = s.data();
+          size_t left = s.size();
+          while (left > 0) {
+            ssize_t w = write(solverIn, p, left);
+            if (w <= 0) return false;
+            p += w; left -= (size_t)w;
+          }
+          return true;
+        };
+        auto readLine = [&]() -> string {
+          string line;
+          char c;
+          while (read(solverOut, &c, 1) == 1) {
+            if (c == '\n') { if (line.empty()) continue; return line; }
+            if (c != '\r') line += c;
+          }
+          return line;
+        };
+        auto readBalanced = [&]() -> string {
+          string s;
+          int depth = 0;
+          bool started = false;
+          char c;
+          while (read(solverOut, &c, 1) == 1) {
+            if (!started) {
+              if (c == '(') { started = true; depth = 1; s += c; }
+              continue;
+            }
+            s += c;
+            if (c == '(') depth++;
+            else if (c == ')') { depth--; if (depth == 0) return s; }
+          }
+          return s;
+        };
+        auto skipWs = [](const string& s, size_t& k) {
+          while (k < s.size() && (s[k]==' '||s[k]=='\n'||s[k]=='\t'||s[k]=='\r')) k++;
+        };
+        auto parseGetValue = [&](const string& s) -> vector<pair<string,string>> {
+          vector<pair<string,string>> out;
+          size_t i = 0;
+          skipWs(s, i);
+          if (i >= s.size() || s[i] != '(') return out;
+          i++;
+          while (true) {
+            skipWs(s, i);
+            if (i >= s.size() || s[i] == ')') break;
+            if (s[i] != '(') { i++; continue; }
+            i++;
+            skipWs(s, i);
+            size_t nameStart = i;
+            while (i < s.size() && s[i]!=' ' && s[i]!='\t' && s[i]!='\n' && s[i]!=')') i++;
+            string name = s.substr(nameStart, i - nameStart);
+            skipWs(s, i);
+            string val;
+            if (i < s.size() && s[i] == '(') {
+              int d = 1; val += s[i++];
+              while (i < s.size() && d > 0) {
+                if (s[i]=='(') d++;
+                else if (s[i]==')') d--;
+                val += s[i++];
+              }
+            } else {
+              while (i<s.size() && s[i]!=' ' && s[i]!=')' && s[i]!='\n') val += s[i++];
+            }
+            out.push_back(make_pair(name, val));
+            skipWs(s, i);
+            while (i < s.size() && s[i] != ')') i++;
+            if (i < s.size()) i++;
+          }
+          return out;
+        };
+        auto toDecimal = [](const string& v) -> string {
+          if (v.size() >= 2 && v[0]=='#' && (v[1]=='x'||v[1]=='X')) {
+            unsigned long long n = 0;
+            for (size_t k = 2; k < v.size(); k++) {
+              char c = v[k]; int d;
+              if (c>='0'&&c<='9') d=c-'0';
+              else if (c>='a'&&c<='f') d=c-'a'+10;
+              else if (c>='A'&&c<='F') d=c-'A'+10;
+              else break;
+              n = n*16 + d;
+            }
+            return to_string(n);
+          }
+          if (v.size() >= 2 && v[0]=='#' && (v[1]=='b'||v[1]=='B')) {
+            unsigned long long n = 0;
+            for (size_t k = 2; k < v.size(); k++) {
+              if (v[k]!='0' && v[k]!='1') break;
+              n = n*2 + (v[k]-'0');
+            }
+            return to_string(n);
+          }
+          if (v.size() > 3 && v[0]=='(' && v[1]=='-') {
+            size_t s = 2; while (s < v.size() && v[s]==' ') s++;
+            size_t e = v.find(')', s);
+            if (e != string::npos) return "-" + v.substr(s, e-s);
+          }
+          return v;
+        };
+
+        if (!writeAll(buffer)) {
+          cerr << "ERROR: could not write SMT-LIB to solver." << endl;
+          close(solverIn); close(solverOut);
+          waitpid(pid, nullptr, 0);
+          return;
+        }
+
+        int solutionCount = 0;
+        while (true) {
+          if (!writeAll("(check-sat)\n")) break;
+          string firstLine = readLine();
+          if (firstLine == "unsat") break;
+          if (firstLine == "unknown") {
+            cerr << "Solver returned 'unknown' - could not determine satisfiability." << endl;
+            break;
+          }
+          if (firstLine != "sat") {
+            if (!firstLine.empty()) cerr << "Unexpected solver output: " << firstLine << endl;
+            break;
+          }
+
+          if (bSMTHasOptimize) {
+            writeAll("(get-objectives)\n");
+            string objs = readBalanced();
+            cout << "Objectives: " << objs << endl;
+          }
+
+          vector<pair<string,string>> values;
+          if (!freeVars.empty()) {
+            string cmd = "(get-value (";
+            for (size_t k = 0; k < freeVars.size(); k++) {
+              if (k) cmd += " ";
+              cmd += freeVars[k].first;
+            }
+            cmd += "))\n";
+            if (!writeAll(cmd)) break;
+            string response = readBalanced();
+            values = parseGetValue(response);
+          }
+
+          solutionCount++;
+          if (bSMTAssertAll) cout << "--> Solution " << solutionCount << endl;
+          for (size_t k = 0; k < values.size(); k++) {
+            cout << values[k].first << "=" << toDecimal(values[k].second) << ";" << endl;
+          }
+          if (bSMTAssertAll) cout << endl;
+
+          if (!bSMTAssertAll || bSMTHasOptimize) break;
+
+          string block = "(assert (not (and";
+          for (size_t k = 0; k < values.size(); k++) {
+            block += " (= " + values[k].first + " " + values[k].second + ")";
+          }
+          block += ")))\n";
+          if (!writeAll(block)) break;
+        }
+
+        writeAll("(exit)\n");
+        close(solverIn);
+        close(solverOut);
+        waitpid(pid, nullptr, 0);
+
+        if (solutionCount == 0) {
+          cout << "No solutions found." << endl;
+        } else if (bSMTAssertAll) {
+          cerr << "[Number of solutions: " << solutionCount << "]" << endl;
         }
       });
     }
