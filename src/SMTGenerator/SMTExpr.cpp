@@ -195,6 +195,13 @@ size_t SMTExpr::treeSize() const {
     return total;
 }
 
+void SMTExpr::collectVarRefs(std::map<std::string, SMTExpr*>& out) const {
+    if (type == BV_VAR || type == INT_VAR || type == BOOL_VAR) {
+        out.insert({varName, const_cast<SMTExpr*>(this)});
+    }
+    for (const SMTExpr* ch : children) ch->collectVarRefs(out);
+}
+
 static void gatherAssociative(const SMTExpr* e, SMTNodeType op,
                               std::vector<const SMTExpr*>& out) {
     if (e->type == op) {

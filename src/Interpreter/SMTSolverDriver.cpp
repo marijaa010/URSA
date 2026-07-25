@@ -21,7 +21,8 @@ static string unflattenArrayName(const string& name) {
 }
 
 int SMTSolverDriver::run() {
-    if (m_buffer.find("(declare-fun") == string::npos) {
+    if (m_buffer.find("yes (trivially)") != string::npos ||
+        m_buffer.find("no (trivially)") != string::npos) {
         printTrivial();
         return 0;
     }

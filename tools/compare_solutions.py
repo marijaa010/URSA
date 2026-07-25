@@ -770,11 +770,14 @@ def main():
     api_available_map = {"z3": HAVE_Z3PY, "cvc5": HAVE_CVC5PY}
     api_hint_map = {"z3": "pip install z3-solver", "cvc5": "pip install cvc5"}
 
+    _probe = extract_smt2(effective_file, args.length, args.ursa, args.smt_logic)
+    effective_logic = _probe[0][3]
+
     smt_results = {}
     api_results = {}
     for solver_name in solver_names:
         binary = solver_binaries[solver_name]
-        print(f"Running SMT path ({args.smt_logic}, subprocess: {solver_name} binary)...", flush=True)
+        print(f"Running SMT path ({effective_logic}, subprocess: {solver_name} binary)...", flush=True)
         smt_count, smt_models, smt_t = count_smt(
             effective_file, args.length, args.ursa, solver_name, binary,
             args.max, args.timeout, args.total_timeout, args.single_solution, args.smt_logic,
@@ -785,7 +788,7 @@ def main():
         smt_results[solver_name] = (smt_count, smt_models, smt_t)
 
         if api_available_map[solver_name] and not args.no_api:
-            print(f"Running SMT path ({args.smt_logic}, {solver_name} Python API)...", flush=True)
+            print(f"Running SMT path ({effective_logic}, {solver_name} Python API)...", flush=True)
             api_count, api_models, api_t = count_smt_api(
                 effective_file, args.length, args.ursa, solver_name, binary,
                 args.max, args.total_timeout,

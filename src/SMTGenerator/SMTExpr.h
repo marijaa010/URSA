@@ -24,6 +24,7 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include <iostream>
 #include <cstdint>
 
@@ -168,6 +169,15 @@ public:
      * @param width Bit-width of the literal.
      */
     static std::string formatBvConst(uint64_t value, int width);
+
+    /**
+     * @brief Walks the DAG and inserts every leaf variable node
+     *        (`BV_VAR`, `INT_VAR`, `BOOL_VAR`) into the map, keyed by name.
+     *        Used at emission time to declare all variables actually
+     *        referenced in assertions, including ones that were later
+     *        rebound in the symbol table.
+     */
+    void collectVarRefs(std::map<std::string, SMTExpr*>& out) const;
 };
 
 /**

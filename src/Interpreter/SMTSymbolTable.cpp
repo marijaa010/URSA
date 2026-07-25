@@ -254,7 +254,8 @@ SMTBoolean SMTSymbolTable::getBoolElValue2(const string& sVarName,
                                         nIndex2.GetGroundValueUnsigned()));
 }
 
-void SMTSymbolTable::collectFreeVarDeclarations(ostream& out) const {
+void SMTSymbolTable::collectFreeVarDeclarations(
+        ostream& out, map<string, SMTExpr*>& declared) const {
     for (auto& kv : SymInt) {
         SMTExpr* e = kv.second->getExpr();
         if (!e || e->varName != kv.first) continue;
@@ -272,19 +273,23 @@ void SMTSymbolTable::collectFreeVarDeclarations(ostream& out) const {
         if (e->type == BV_VAR) {
             out << "(declare-fun " << quoteSymbol(kv.first)
                 << " () (_ BitVec " << kv.second->getWidth() << "))" << endl;
+            declared[kv.first] = e;
         } else if (e->type == INT_VAR) {
             out << "(declare-fun " << quoteSymbol(kv.first) << " () Int)" << endl;
+            declared[kv.first] = e;
         }
     }
     for (auto& kv : SymBool) {
         SMTExpr* e = kv.second->getExpr();
         if (e && e->type == BOOL_VAR && e->varName == kv.first) {
             out << "(declare-fun " << quoteSymbol(kv.first) << " () Bool)" << endl;
+            declared[kv.first] = e;
         }
     }
     for (auto& kv : SymArrayBase) {
         SMTExpr* arr = kv.second;
         out << "(declare-fun " << quoteSymbol(kv.first) << " () ";
+        declared[kv.first] = arr;
         if (arr->is2D) {
             if (bSMTLogic == eLogicQF_LIA) {
                 out << "(Array Int (Array Int Int))";

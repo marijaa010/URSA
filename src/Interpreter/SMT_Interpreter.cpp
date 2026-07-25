@@ -336,7 +336,24 @@ bool SMTInterpreter::SolveConstraint(nodeType *p, bool bAllSolutions) {
             logicName = hasArr ? "QF_ABV" : "QF_BV";
         cout << "(set-logic " << logicName << ")" << endl;
     }
-    m_ST.collectFreeVarDeclarations(cout);
+    map<string, SMTExpr*> declaredHere;
+    m_ST.collectFreeVarDeclarations(cout, declaredHere);
+    map<string, SMTExpr*> referenced;
+    for (auto& a : m_assertions) {
+        if (a.getExpr()) a.getExpr()->collectVarRefs(referenced);
+    }
+    for (auto& kv : referenced) {
+        if (declaredHere.count(kv.first)) continue;
+        SMTExpr* v = kv.second;
+        if (v->type == BV_VAR) {
+            cout << "(declare-fun " << kv.first
+                 << " () (_ BitVec " << v->width << "))" << endl;
+        } else if (v->type == INT_VAR) {
+            cout << "(declare-fun " << kv.first << " () Int)" << endl;
+        } else if (v->type == BOOL_VAR) {
+            cout << "(declare-fun " << kv.first << " () Bool)" << endl;
+        }
+    }
     cout << endl;
     m_ST.collectArrayInitAssertions(cout);
     for (auto& a : m_assertions) {

@@ -109,9 +109,13 @@ public:
   ///@{
   /**
    * @brief Emits `(declare-fun name () sort)` for every free variable
-   *        (scalar numeric, scalar Boolean, materialized array).
+   *        (scalar numeric, scalar Boolean, materialized array) and
+   *        records the emitted names in `declared` so that a caller can
+   *        avoid re-declaring the same names when scanning assertions
+   *        for referenced variables.
    */
-  void collectFreeVarDeclarations(std::ostream& out) const;
+  void collectFreeVarDeclarations(std::ostream& out,
+                                  std::map<std::string, SMTExpr*>& declared) const;
 
   /**
    * @brief Emits `(assert (= (select nA k) v))` for each ground-index
