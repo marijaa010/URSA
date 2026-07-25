@@ -359,16 +359,3 @@ void SMTSymbolTable::collectArrayInitAssertions(ostream& out) const {
         }
     }
 }
-
-void SMTSymbolTable::printIndependentNames(ostream& out) const {
-    for (auto& kv : SymInt) {
-        SMTExpr* e = kv.second->getExpr();
-        if (e && e->type == BV_VAR && e->varName == kv.first)
-            out << kv.first << " ";
-    }
-    for (auto& kv : SymBool) {
-        SMTExpr* e = kv.second->getExpr();
-        if (e && e->type == BOOL_VAR && e->varName == kv.first)
-            out << kv.first << " ";
-    }
-}

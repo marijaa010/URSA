@@ -67,9 +67,6 @@ def run_sat(file_path: Path, length: int, ursa: str) -> tuple[int, list[dict[str
     if m:
         timings["solving"] = float(m.group(1))
 
-    if "No solutions found" in out or "[Number of solutions: 0]" in out:
-        return 0, [], timings
-
     if "--> Solution " in out:
         chunks = re.split(r"^--> Solution \d+\s*$", out, flags=re.MULTILINE)
         models = []
@@ -82,6 +79,9 @@ def run_sat(file_path: Path, length: int, ursa: str) -> tuple[int, list[dict[str
     model = dict(re.findall(r"^([a-zA-Z_]\w*(?:\[\d+\])*)\s*=\s*([^;\s]+);", out, re.MULTILINE))
     if model:
         return 1, [model], timings
+
+    if "No solutions found" in out or "[Number of solutions: 0]" in out:
+        return 0, [], timings
 
     if re.search(r"^yes\b", out, re.MULTILINE):
         return 1, [{}], timings
@@ -126,8 +126,12 @@ def _split_smtlib_forms(text: str) -> list[str]:
 def extract_smt2(file_path: Path, length: int, ursa: str, logic: str = "QF_BV"):
     """
     Run URSA in -smt mode with the given SMT-LIB logic (QF_BV or QF_LIA),
-    parse the emitted SMT-LIB. Returns ((declarations, assertions, free_vars),
-    trivial, optimize).
+    parse the emitted SMT-LIB. Returns ((declarations, assertions, free_vars,
+    emitted_logic), trivial, optimize).
+
+    emitted_logic is what URSA actually put in (set-logic ...), which may
+    differ from the requested logic (e.g., QF_BV upgraded to QF_ABV when
+    an array with symbolic index is present, or QF_LIA to QF_ALIA).
     """
     ursa_args = [ursa, f"-l{length}"]
     if logic == "QF_LIA":
@@ -147,6 +151,7 @@ def extract_smt2(file_path: Path, length: int, ursa: str, logic: str = "QF_BV"):
     free_vars = []
     optimize = None
     trivial = None
+    emitted_logic = logic
     out = result.stdout
 
     for line in out.splitlines():
@@ -154,10 +159,14 @@ def extract_smt2(file_path: Path, length: int, ursa: str, logic: str = "QF_BV"):
         elif line.startswith("no (trivially)"): trivial = False
 
     for form in _split_smtlib_forms(out):
-        if form.startswith("(declare-fun"):
-            declarations.append(form)
-            m = re.match(r"\(declare-fun\s+(\S+)\s+\(\)", form)
+        if form.startswith("(set-logic"):
+            m = re.match(r"\(set-logic\s+(\S+?)\s*\)", form)
             if m:
+                emitted_logic = m.group(1)
+        elif form.startswith("(declare-fun"):
+            declarations.append(form)
+            m = re.match(r"\(declare-fun\s+(\S+)\s+\(\)\s+(.+)\)\s*$", form, re.DOTALL)
+            if m and "Array" not in m.group(2):
                 free_vars.append(m.group(1))
         elif form.startswith("(assert"):
             assertions.append(form)
@@ -165,8 +174,8 @@ def extract_smt2(file_path: Path, length: int, ursa: str, logic: str = "QF_BV"):
             optimize = form
 
     if trivial is not None and not assertions:
-        return ([], [], []), trivial, None
-    return (declarations, assertions, free_vars), None, optimize
+        return ([], [], [], emitted_logic), trivial, None
+    return (declarations, assertions, free_vars, emitted_logic), None, optimize
 
 
 def solver_cmd(solver_name: str, binary: str) -> list[str]:
@@ -188,15 +197,6 @@ def run_smt_solver(smt2: str, solver_name: str, binary: str, timeout: int) -> st
         timeout=timeout,
     )
     return result.stdout
-
-
-def quote_smt_symbol(name: str) -> str:
-    """Wrap a name in |...| if it contains characters disallowed in simple symbols."""
-    simple = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                 "0123456789+-/*=%?!.$_~&^<>@")
-    if name and all(c in simple for c in name):
-        return name
-    return "|" + name + "|"
 
 
 def smt_value_to_decimal(value: str) -> str:
@@ -256,7 +256,7 @@ def count_smt(
 ) -> tuple[int, list[dict[str, str]], dict]:
     t_start = time.perf_counter()
     t0 = time.perf_counter()
-    (declarations, assertions, free_vars), trivial, optimize = extract_smt2(
+    (declarations, assertions, free_vars, emitted_logic), trivial, optimize = extract_smt2(
         file_path, length, ursa, logic
     )
     ursa_emit = time.perf_counter() - t0
@@ -268,6 +268,11 @@ def count_smt(
     if trivial is False:
         timings["wall"] = time.perf_counter() - t_start
         return 0, [], timings
+
+    if optimize is not None and solver_name != "z3":
+        print(f"  (skipped: {solver_name} does not support {optimize.split()[0][1:]})")
+        timings["wall"] = time.perf_counter() - t_start
+        return -1, [], timings
 
     if optimize is not None:
         smt2 = (
@@ -293,7 +298,7 @@ def count_smt(
         decimal_model = {n: smt_value_to_decimal(v) for n, v in raw_model.items()}
         return 1, [decimal_model], timings
 
-    set_logic_line = f"(set-logic {logic})\n"
+    set_logic_line = f"(set-logic {emitted_logic})\n"
 
     if not free_vars:
         smt2 = set_logic_line + "\n".join(assertions) + "\n(check-sat)\n"
@@ -346,7 +351,7 @@ def count_smt(
             print(out, file=sys.stderr)
             break
 
-        eqs = " ".join(f"(= {quote_smt_symbol(n)} {v})" for n, v in raw_model.items())
+        eqs = " ".join(f"(= {n} {v})" for n, v in raw_model.items())
         blocking.append(f"(assert (not (and {eqs})))")
         models.append({n: smt_value_to_decimal(v) for n, v in raw_model.items()})
 
@@ -379,7 +384,7 @@ def _count_smt_api_z3(
 ) -> tuple[int, list[dict[str, str]], dict]:
     t_start = time.perf_counter()
     t0 = time.perf_counter()
-    (declarations, assertions, free_vars), trivial, optimize = extract_smt2(
+    (declarations, assertions, free_vars, emitted_logic), trivial, optimize = extract_smt2(
         file_path, length, ursa, logic
     )
     ursa_emit = time.perf_counter() - t0
@@ -422,7 +427,7 @@ def _count_smt_api_z3(
         return 1, [decimal_model], timings
 
     smt2_text = (
-        f"(set-logic {logic})\n"
+        f"(set-logic {emitted_logic})\n"
         + "\n".join(declarations)
         + "\n"
         + "\n".join(assertions)
@@ -443,9 +448,12 @@ def _count_smt_api_z3(
         solver.add(a)
 
     var_consts = {}
+    free_var_set = set(free_vars)
     for d in solver.assertions():
         for sub in _collect_free_vars(d):
-            var_consts.setdefault(sub.decl().name(), sub)
+            name = sub.decl().name()
+            if name in free_var_set:
+                var_consts.setdefault(name, sub)
 
     models: list[dict[str, str]] = []
     if not var_consts:
@@ -524,7 +532,7 @@ def _count_smt_api_cvc5(
 
     t_start = time.perf_counter()
     t0 = time.perf_counter()
-    (declarations, assertions, free_vars), trivial, optimize = extract_smt2(
+    (declarations, assertions, free_vars, emitted_logic), trivial, optimize = extract_smt2(
         file_path, length, ursa, logic
     )
     ursa_emit = time.perf_counter() - t0
@@ -537,8 +545,13 @@ def _count_smt_api_cvc5(
         timings["wall"] = time.perf_counter() - t_start
         return 0, [], timings
 
+    if optimize is not None:
+        print(f"  (skipped: cvc5 does not support {optimize.split()[0][1:]})")
+        timings["wall"] = time.perf_counter() - t_start
+        return -1, [], timings
+
     smt2_text = (
-        f"(set-logic {logic})\n"
+        f"(set-logic {emitted_logic})\n"
         + "\n".join(declarations)
         + "\n"
         + "\n".join(assertions)
@@ -564,10 +577,12 @@ def _count_smt_api_cvc5(
 
     declared = sm.getDeclaredTerms()
     var_terms = {}
+    free_var_set = set(free_vars)
     for term in declared:
         try:
             name = str(term)
-            var_terms[name] = term
+            if name in free_var_set:
+                var_terms[name] = term
         except Exception:
             pass
 
@@ -702,8 +717,9 @@ def main():
                         help="path to ursa binary")
     parser.add_argument("--z3", default="z3", help="path to z3 binary")
     parser.add_argument("--cvc5", default="cvc5", help="path to cvc5 binary")
-    parser.add_argument("--smt-solver", choices=["z3", "cvc5"], default="z3",
-                        help="which SMT solver to use (default: z3)")
+    parser.add_argument("--smt-solver", choices=["z3", "cvc5", "all"], default="z3",
+                        help="which SMT solver to use (default: z3). "
+                             "'all' runs each supported solver and compares them.")
     parser.add_argument("--no-api", action="store_true",
                         help="skip the Z3 Python API comparison")
     parser.add_argument("--show-models", action="store_true",
@@ -730,11 +746,18 @@ def main():
 
     print(f"File:   {args.file}")
     print(f"Length: {args.length} bit")
-    if args.single_solution:
-        print("Mode:   single-solution (assert_all → assert; SMT loop stops after 1)")
+
+    src = args.file.read_text()
+    has_assert_all = bool(re.search(r"\bassert_all\b", src))
+    if not has_assert_all and not args.single_solution:
+        args.single_solution = True
+        print("Mode:   single-solution (source uses `assert`, not `assert_all`; "
+              "SMT enumeration stops after 1)")
+    elif args.single_solution:
+        print("Mode:   single-solution (assert_all rewritten to assert; SMT loop stops after 1)")
     print(flush=True)
 
-    effective_file = maybe_rewrite_single(args.file, args.single_solution)
+    effective_file = maybe_rewrite_single(args.file, args.single_solution and has_assert_all)
 
     print("Running SAT path...")
     sat_count, sat_models, sat_t = run_sat(effective_file, args.length, args.ursa)
@@ -742,38 +765,38 @@ def main():
     if args.show_models:
         dump_models(sat_models)
 
-    solver_binary = {"z3": args.z3, "cvc5": args.cvc5}[args.smt_solver]
-    print(f"Running SMT path ({args.smt_logic}, subprocess: {args.smt_solver} binary)...", flush=True)
-    smt_count, smt_models, smt_t = count_smt(
-        effective_file, args.length, args.ursa, args.smt_solver, solver_binary,
-        args.max, args.timeout, args.total_timeout, args.single_solution, args.smt_logic,
-    )
-    print(f"  SMT solutions: {smt_count}")
-    if args.show_models:
-        dump_models(smt_models)
+    solver_names = ["z3", "cvc5"] if args.smt_solver == "all" else [args.smt_solver]
+    solver_binaries = {"z3": args.z3, "cvc5": args.cvc5}
+    api_available_map = {"z3": HAVE_Z3PY, "cvc5": HAVE_CVC5PY}
+    api_hint_map = {"z3": "pip install z3-solver", "cvc5": "pip install cvc5"}
 
-    api_count, api_models, api_t = None, None, None
-    api_available = {
-        "z3": HAVE_Z3PY,
-        "cvc5": HAVE_CVC5PY,
-    }.get(args.smt_solver, False)
-
-    if api_available and not args.no_api:
-        print(f"Running SMT path ({args.smt_logic}, {args.smt_solver} Python API)...", flush=True)
-        api_count, api_models, api_t = count_smt_api(
-            effective_file, args.length, args.ursa, args.smt_solver, solver_binary,
-            args.max, args.total_timeout,
-            args.single_solution, args.smt_logic,
+    smt_results = {}
+    api_results = {}
+    for solver_name in solver_names:
+        binary = solver_binaries[solver_name]
+        print(f"Running SMT path ({args.smt_logic}, subprocess: {solver_name} binary)...", flush=True)
+        smt_count, smt_models, smt_t = count_smt(
+            effective_file, args.length, args.ursa, solver_name, binary,
+            args.max, args.timeout, args.total_timeout, args.single_solution, args.smt_logic,
         )
-        print(f"  SMT solutions: {api_count}")
+        print(f"  SMT solutions: {'skipped' if smt_count == -1 else smt_count}")
         if args.show_models:
-            dump_models(api_models)
-    elif not api_available:
-        hint = {
-            "z3": "pip install z3-solver",
-            "cvc5": "pip install cvc5",
-        }.get(args.smt_solver, "")
-        print(f"({args.smt_solver} Python API not available; {hint})")
+            dump_models(smt_models)
+        smt_results[solver_name] = (smt_count, smt_models, smt_t)
+
+        if api_available_map[solver_name] and not args.no_api:
+            print(f"Running SMT path ({args.smt_logic}, {solver_name} Python API)...", flush=True)
+            api_count, api_models, api_t = count_smt_api(
+                effective_file, args.length, args.ursa, solver_name, binary,
+                args.max, args.total_timeout,
+                args.single_solution, args.smt_logic,
+            )
+            print(f"  SMT solutions: {'skipped' if api_count == -1 else api_count}")
+            if args.show_models:
+                dump_models(api_models)
+            api_results[solver_name] = (api_count, api_models, api_t)
+        elif not api_available_map[solver_name]:
+            print(f"({solver_name} Python API not available; {api_hint_map[solver_name]})")
 
     print()
     print("Timing:")
@@ -782,45 +805,73 @@ def main():
         print(f"                  gen:  {sat_t['generation']*1000:9.2f} ms")
     if "solving" in sat_t:
         print(f"                  solv: {sat_t['solving']*1000:9.2f} ms")
-    solver_label = args.smt_solver
-    print(f"  SMT subprocess  wall: {smt_t['wall']*1000:9.2f} ms")
-    print(f"                  emit: {smt_t['ursa_emit']*1000:9.2f} ms")
-    print(f"                  {solver_label:5}:{smt_t['z3_total']*1000:9.2f} ms over {smt_t['z3_calls']} {plural(smt_t['z3_calls'], 'call')}")
-    if smt_t["z3_first"] is not None:
-        print(f"                  1st:  {smt_t['z3_first']*1000:9.2f} ms (first solution)")
-    if api_t is not None:
-        print(f"  SMT Python API  wall: {api_t['wall']*1000:9.2f} ms")
-        print(f"                  emit: {api_t['ursa_emit']*1000:9.2f} ms")
-        print(f"                  {solver_label:5}:{api_t['z3_total']*1000:9.2f} ms over {api_t['z3_calls']} {plural(api_t['z3_calls'], 'call')}")
-        if api_t["z3_first"] is not None:
-            print(f"                  1st:  {api_t['z3_first']*1000:9.2f} ms (first solution)")
+
+    for solver_name in solver_names:
+        smt_count, smt_models, smt_t = smt_results[solver_name]
+        print(f"  SMT subprocess ({solver_name})  wall: {smt_t['wall']*1000:9.2f} ms")
+        print(f"                  emit: {smt_t['ursa_emit']*1000:9.2f} ms")
+        print(f"                  {solver_name:5}:{smt_t['z3_total']*1000:9.2f} ms over {smt_t['z3_calls']} {plural(smt_t['z3_calls'], 'call')}")
+        if smt_t["z3_first"] is not None:
+            print(f"                  1st:  {smt_t['z3_first']*1000:9.2f} ms (first solution)")
+        if solver_name in api_results:
+            _, _, api_t = api_results[solver_name]
+            print(f"  SMT Python API ({solver_name})  wall: {api_t['wall']*1000:9.2f} ms")
+            print(f"                  emit: {api_t['ursa_emit']*1000:9.2f} ms")
+            print(f"                  {solver_name:5}:{api_t['z3_total']*1000:9.2f} ms over {api_t['z3_calls']} {plural(api_t['z3_calls'], 'call')}")
+            if api_t["z3_first"] is not None:
+                print(f"                  1st:  {api_t['z3_first']*1000:9.2f} ms (first solution)")
+
     if sat_t.get("solving") is not None:
         print()
         print("Ratios vs SAT solving:")
-        if smt_t["z3_first"] is not None and sat_t["solving"] > 0:
-            print(f"  subprocess {solver_label} first / SAT solving: {smt_t['z3_first']/sat_t['solving']:.1f}x")
-        if api_t is not None and api_t["z3_first"] is not None and sat_t["solving"] > 0:
-            print(f"  api {solver_label} first / SAT solving:        {api_t['z3_first']/sat_t['solving']:.1f}x")
-        if api_t is not None and smt_t["z3_first"] is not None and api_t["z3_first"] is not None and api_t["z3_first"] > 0:
-            print(f"  subprocess overhead vs api (first call): {smt_t['z3_first']/api_t['z3_first']:.1f}x")
+        for solver_name in solver_names:
+            _, _, smt_t = smt_results[solver_name]
+            if smt_t["z3_first"] is not None and sat_t["solving"] > 0:
+                print(f"  subprocess {solver_name} first / SAT solving: {smt_t['z3_first']/sat_t['solving']:.1f}x")
+            if solver_name in api_results:
+                _, _, api_t = api_results[solver_name]
+                if api_t["z3_first"] is not None and sat_t["solving"] > 0:
+                    print(f"  api {solver_name} first / SAT solving:        {api_t['z3_first']/sat_t['solving']:.1f}x")
+                if smt_t["z3_first"] is not None and api_t["z3_first"] is not None and api_t["z3_first"] > 0:
+                    print(f"  subprocess {solver_name} overhead vs api (first call): {smt_t['z3_first']/api_t['z3_first']:.1f}x")
 
     print()
-    counts = {"SAT": sat_count, "SMT subprocess": smt_count}
-    if api_count is not None:
-        counts["SMT API"] = api_count
+    counts = {"SAT": sat_count}
+    skipped = []
+    for solver_name in solver_names:
+        smt_count, _, _ = smt_results[solver_name]
+        if smt_count == -1:
+            skipped.append(f"SMT subprocess ({solver_name})")
+        else:
+            counts[f"SMT subprocess ({solver_name})"] = smt_count
+        if solver_name in api_results:
+            api_count, _, _ = api_results[solver_name]
+            if api_count == -1:
+                skipped.append(f"SMT API ({solver_name})")
+            else:
+                counts[f"SMT API ({solver_name})"] = api_count
+
+    if skipped:
+        print(f"Skipped paths: {', '.join(skipped)}")
+
     distinct = set(counts.values())
     if len(distinct) == 1:
         only = next(iter(distinct))
         print(f"MATCH: all paths found {only} {plural(only, 'solution')}")
-        diff = compare_model_sets(sat_models, smt_models)
-        if diff:
-            print("NOTE: SAT vs SMT subprocess assignments differ:")
-            print(diff)
-        if api_models is not None:
-            diff = compare_model_sets(sat_models, api_models)
-            if diff:
-                print("NOTE: SAT vs SMT API assignments differ:")
-                print(diff)
+        for solver_name in solver_names:
+            smt_count, smt_models, _ = smt_results[solver_name]
+            if smt_count != -1:
+                diff = compare_model_sets(sat_models, smt_models)
+                if diff:
+                    print(f"NOTE: SAT vs SMT subprocess ({solver_name}) assignments differ:")
+                    print(diff)
+            if solver_name in api_results:
+                api_count, api_models, _ = api_results[solver_name]
+                if api_count != -1:
+                    diff = compare_model_sets(sat_models, api_models)
+                    if diff:
+                        print(f"NOTE: SAT vs SMT API ({solver_name}) assignments differ:")
+                        print(diff)
         sys.exit(0)
     else:
         labels = ", ".join(f"{k}={v}" for k, v in counts.items())
@@ -838,12 +889,40 @@ def dump_models(models: list[dict[str, str]]) -> None:
             print(f"    [{i}] {items}")
 
 
+def _normalize_var_name(name: str) -> str:
+    """Convert `n[k]` (SAT-side array notation) to `n_k_` (SMT-side flat name)
+    so that models from the two paths can be compared by matching variables."""
+    return name.replace("[", "_").replace("]", "_")
+
+
+def _restrict_to_common_keys(a: list[dict[str, str]], b: list[dict[str, str]]):
+    """Restrict both model lists to keys present in both. Handles the case
+    where SMT emits the optimization variable (e.g. nL) but SAT does not."""
+    common = set()
+    if a:
+        common = {_normalize_var_name(k) for k in a[0]}
+    if b and common:
+        common &= {_normalize_var_name(k) for k in b[0]}
+    elif b:
+        common = {_normalize_var_name(k) for k in b[0]}
+    return (
+        [{_normalize_var_name(k): v for k, v in m.items() if _normalize_var_name(k) in common} for m in a],
+        [{_normalize_var_name(k): v for k, v in m.items() if _normalize_var_name(k) in common} for m in b],
+    )
+
+
 def compare_model_sets(a: list[dict[str, str]], b: list[dict[str, str]]) -> str:
-    """If two model lists differ as sets, return a human-readable diff. Else ''."""
+    """If two model lists differ as sets, return a human-readable diff. Else ''.
+
+    Comparison is done on the intersection of variable names, so a difference in
+    which side reports the optimization variable (SMT does, SAT usually does not)
+    does not count as a mismatch when the shared variables all agree.
+    """
+    a_common, b_common = _restrict_to_common_keys(a, b)
     def freeze(m: dict[str, str]) -> frozenset:
         return frozenset(m.items())
-    sa = {freeze(m) for m in a}
-    sb = {freeze(m) for m in b}
+    sa = {freeze(m) for m in a_common}
+    sb = {freeze(m) for m in b_common}
     only_a = sa - sb
     only_b = sb - sa
     if not only_a and not only_b:

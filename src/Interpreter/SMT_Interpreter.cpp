@@ -15,9 +15,6 @@ typedef enum { eLogicQF_BV, eLogicQF_LIA } eSMTLogic;
 extern eSMTLogic bSMTLogic;
 extern bool bSMTSolveMode;
 
-bool bSMTAssertAll = false;
-bool bSMTHasOptimize = false;
-
 
 static uint64_t parseIntLiteral(const char* s) {
     if (!s) return 0;
@@ -303,8 +300,7 @@ bool SMTInterpreter::Solve(nodeType *p, bool bAllSolutions) {
 }
 
 bool SMTInterpreter::SolveConstraint(nodeType *p, bool bAllSolutions) {
-    if (bAllSolutions) bSMTAssertAll = true;
-    if (m_hasOptimization) bSMTHasOptimize = true;
+    if (bAllSolutions) m_wasAssertAll = true;
     double dTime_parsing = m_Timer.ElapsedTime();
     m_Timer.StartMeasuringTime();
 
@@ -498,6 +494,3 @@ void SMTInterpreter::ExecuteCommandTree(nodeType *p) {
         ExecuteCommand(p);
     }
 }
-
-void SMTInterpreter::PrintProcedure() {}
-void SMTInterpreter::PrintCommand(nodeType*) {}

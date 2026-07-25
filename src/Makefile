@@ -9,7 +9,7 @@ ALL_CXXFLAGS = $(CXXFLAGS) -W -Wall $(INCLUDE)  $(ADDFLAGS)
 
 sources := $(wildcard Interpreter/*.cpp)
 sources += $(wildcard AbstractNumbers/*.cpp)
-sources += $(filter-out SMTGenerator/main.cpp, $(wildcard SMTGenerator/*.cpp))
+sources += $(wildcard SMTGenerator/*.cpp)
 sources += $(wildcard Utils/*.cpp)
 sources += $(wildcard SATsolvers/ArgoSATsolver/*.cpp)
 sources += $(wildcard SATsolvers/ArgoSATsolver/auxiliary/*.cpp)
