@@ -1,9 +1,23 @@
 SHELL = /bin/sh
 CXX = g++
 LDFLAGS = -static-libstdc++
-CXXFLAGS = -std=c++11 -O2 -DNDEBUG  
+CXXFLAGS = -std=c++11 -O2 -DNDEBUG
 ADDFLAGS ?=
-INCLUDE = -IAbstractNumbers -IParser -IInterpreter -IUtils -ISMTGenerator -ISATsolvers -ISATsolvers/clasp_solver -ISATsolvers/clasp_solver/include -ISATsolvers/clasp_solver/program_opts -ISATsolvers/ArgoSATsolver -ISATsolvers/ArgoSATsolver/basic-types -ISATsolvers/ArgoSATsolver/auxiliary -ISATsolvers/ArgoSATsolver/listeners -ISATsolvers/ArgoSATsolver/strategies -ISATsolvers/minisat
+
+# URSA links Z3 and cvc5 as libraries and solves in-process (-smtsolve=z3|cvc5).
+# Prefixes may be overridden on the command line, e.g.
+#   make Z3_PREFIX=/usr/local CVC5_PREFIX=/usr/local
+# Z3 is auto-detected via Homebrew; both default to /usr/local otherwise.
+# The cvc5 C++ headers require C++17, so only SMTSolverDriver.o is built with
+# -std=c++17 (see explicit rule below); the rest of URSA stays C++11.
+Z3_PREFIX ?= $(shell brew --prefix z3 2>/dev/null || echo /usr/local)
+CVC5_PREFIX ?= /usr/local
+SMT_INCLUDE = -I$(Z3_PREFIX)/include -I$(CVC5_PREFIX)/include
+LDFLAGS += -L$(Z3_PREFIX)/lib -lz3 \
+           -L$(CVC5_PREFIX)/lib -lcvc5parser -lcvc5 -lcadical -lcln -lglpk \
+           -lpicpoly -lpicpolyxx -lcocoa -lgmpxx -lgmp
+
+INCLUDE =-IAbstractNumbers -IParser -IInterpreter -IUtils -ISMTGenerator -ISATsolvers -ISATsolvers/clasp_solver -ISATsolvers/clasp_solver/include -ISATsolvers/clasp_solver/program_opts -ISATsolvers/ArgoSATsolver -ISATsolvers/ArgoSATsolver/basic-types -ISATsolvers/ArgoSATsolver/auxiliary -ISATsolvers/ArgoSATsolver/listeners -ISATsolvers/ArgoSATsolver/strategies -ISATsolvers/minisat
 
 ALL_CXXFLAGS = $(CXXFLAGS) -W -Wall $(INCLUDE)  $(ADDFLAGS)
 
@@ -47,7 +61,15 @@ Parser/ursa.tab.cpp Parser/ursa.tab.hpp: Parser/ursa.ypp
 	mv ursa.tab.* Parser 
 
 %.o:	%.cpp
-	$(CXX) $(ALL_CXXFLAGS) -c $< -o $@ 
+	$(CXX) $(ALL_CXXFLAGS) -c $< -o $@
+
+# The SMT solver driver includes the Z3 and cvc5 C++ headers; cvc5 requires
+# C++17, so this single unit is built with C++17 and the solver include paths.
+Interpreter/SMTSolverDriver.o: Interpreter/SMTSolverDriver.cpp
+	$(CXX) $(filter-out -std=c++11,$(ALL_CXXFLAGS)) -std=c++17 $(SMT_INCLUDE) -c $< -o $@
+
+Interpreter/SMTSolverDriver.dep: Interpreter/SMTSolverDriver.cpp
+	$(CXX) $(filter-out -std=c++11,$(ALL_CXXFLAGS)) -std=c++17 $(SMT_INCLUDE) -MM $< > $@
 
 %.dep: %.cpp
 	$(CXX) $(ALL_CXXFLAGS) $(INCLUDE) -MM $< > $@

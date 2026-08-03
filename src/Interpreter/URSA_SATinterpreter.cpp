@@ -21,7 +21,6 @@ GNU General Public License for more details.
 #include <cstring>
 #include "URSA_SATinterpreter.hpp"
 #include "CLIOptions.hpp"
-#include "SMTSolverBackend.hpp"
 #include "SMTSolverDriver.hpp"
 #include "SMT_Interpreter.hpp"
 #include "ursa.tab.hpp"
@@ -103,17 +102,12 @@ int main(int argc, char** argv) {
     if (bSMTSolveMode) {
       static ostringstream smtBuffer;
       static streambuf* terminalBuf = cout.rdbuf(smtBuffer.rdbuf());
-      static Z3Backend z3Backend;
-      static CVC5Backend cvc5Backend;
       atexit([]() {
         if (terminalBuf != nullptr) {
           cout.rdbuf(terminalBuf);
           terminalBuf = nullptr;
         }
-        const ISMTSolverBackend& backend =
-            (bSMTSolver == eSolverZ3) ? static_cast<const ISMTSolverBackend&>(z3Backend)
-                                      : static_cast<const ISMTSolverBackend&>(cvc5Backend);
-        SMTSolverDriver driver(smtBuffer.str(), backend,
+        SMTSolverDriver driver(smtBuffer.str(), bSMTSolver,
                                smtIn.wasAssertAll(),
                                smtIn.hasOptimize());
         driver.run();

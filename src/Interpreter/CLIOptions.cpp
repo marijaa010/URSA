@@ -104,9 +104,8 @@ void printCLIHelp() {
     cout << "-s - selects an underlying solvers (e.g., -sargosat, -sclasp, -sminisat; defaulf is clasp)" << endl;
     cout << "-smt - emit SMT-LIB output instead of running a SAT solver (default logic: QF_BV)" << endl;
     cout << "-smtlogic=QF_BV|QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV)" << endl;
-    cout << "-smtsolve=z3|cvc5 - emit SMT-LIB and pipe it to the chosen solver (z3 or cvc5)" << endl;
-    cout << "                    (implies -smt; solver binary read from URSA_Z3 / URSA_CVC5 env vars," << endl;
-    cout << "                     defaults 'z3' / 'cvc5' on PATH)" << endl;
+    cout << "-smtsolve=z3|cvc5 - solve in-process via the linked solver library (implies -smt)." << endl;
+    cout << "                    z3 supports minimize/maximize; cvc5 does not." << endl;
     cout << "-smtout=<path> - write clean SMT-LIB to the given file (implies -smt)." << endl;
     cout << "                 Banner and stats stay on stdout/stderr." << endl << endl;
     cout << "Example:" << endl;

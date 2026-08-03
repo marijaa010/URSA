@@ -1,15 +1,26 @@
 #include "SMTSolverDriver.hpp"
 
+#include <z3++.h>
+#include <cvc5/cvc5.h>
+#include <cvc5/cvc5_parser.h>
+
 #include <iostream>
 #include <sstream>
-#include <cstring>
+#include <string>
+#include <vector>
+#include <utility>
 #include <regex>
-#include <unistd.h>
-#include <sys/wait.h>
+#include <chrono>
+#include <cctype>
+#include <cstdlib>
 
 using namespace std;
 
-static string unflattenArrayName(const string& name) {
+namespace {
+
+using clock_t_ = std::chrono::steady_clock;
+
+string unflattenArrayName(const string& name) {
     static const regex r2d(R"(^(.+?)_(\d+)__(\d+)_$)");
     static const regex r1d(R"(^(.+?)_(\d+)_$)");
     smatch m;
@@ -20,90 +31,43 @@ static string unflattenArrayName(const string& name) {
     return name;
 }
 
-int SMTSolverDriver::run() {
-    if (m_buffer.find("yes (trivially)") != string::npos ||
-        m_buffer.find("no (trivially)") != string::npos) {
-        printTrivial();
-        return 0;
-    }
-
-    if (m_hasOptimize && !m_backend.supportsOptimize()) {
-        cerr << "ERROR: solver '" << m_backend.name()
-             << "' does not support (minimize)/(maximize)." << endl
-             << "       Use -smtsolve=z3 for programs with minimize/maximize,"
-             << endl
-             << "       or use -smt to emit SMT-LIB and drive a solver manually."
-             << endl;
-        return 1;
-    }
-
-    vector<FreeVar> freeVars = extractFreeVars();
-
-    int solverIn, solverOut;
-    pid_t childPid;
-    if (!spawnSolver(solverIn, solverOut, childPid)) {
-        return 1;
-    }
-
-    if (!writeAll(solverIn, m_buffer)) {
-        cerr << "ERROR: could not write SMT-LIB to solver." << endl;
-        close(solverIn); close(solverOut);
-        waitpid(childPid, nullptr, 0);
-        return 1;
-    }
-
-    int solutionCount = 0;
-    while (true) {
-        if (!writeAll(solverIn, "(check-sat)\n")) break;
-        string firstLine = readLine(solverOut);
-        if (firstLine == "unsat") break;
-        if (firstLine == "unknown") {
-            cerr << "Solver returned 'unknown' - could not determine satisfiability."
-                 << endl;
-            break;
-        }
-        if (firstLine != "sat") {
-            if (!firstLine.empty())
-                cerr << "Unexpected solver output: " << firstLine << endl;
-            break;
-        }
-
-        if (m_hasOptimize) {
-            writeAll(solverIn, "(get-objectives)\n");
-            cout << "Objectives: " << readBalanced(solverOut) << endl;
-        }
-
-        vector<Value> values;
-        if (!freeVars.empty()) {
-            if (!writeAll(solverIn, buildGetValueCommand(freeVars))) break;
-            string response = readBalanced(solverOut);
-            values = parseGetValueResponse(response);
-        }
-
-        solutionCount++;
-        printSolution(solutionCount, values);
-
-        if (!m_assertAll || m_hasOptimize) break;
-
-        if (!writeAll(solverIn, buildBlockingClause(values))) break;
-    }
-
-    writeAll(solverIn, "(exit)\n");
-    close(solverIn);
-    close(solverOut);
-    waitpid(childPid, nullptr, 0);
-
-    if (solutionCount == 0) {
-        cout << "No solutions found." << endl;
-    } else if (m_assertAll) {
-        cerr << "[Number of solutions: " << solutionCount << "]" << endl;
-    }
-    return 0;
+void printSolution(bool assertAll, int solutionNumber,
+                   const vector<pair<string, string>>& values) {
+    if (assertAll) cout << "--> Solution " << solutionNumber << endl;
+    for (const auto& kv : values)
+        cout << unflattenArrayName(kv.first) << "=" << kv.second << ";" << endl;
+    if (assertAll) cout << endl;
 }
 
-vector<SMTSolverDriver::FreeVar> SMTSolverDriver::extractFreeVars() const {
+void printTail(int solutionCount, bool assertAll, int checkSatCalls,
+               const char* tag, double totalSeconds) {
+    if (solutionCount == 0) {
+        cout << "No solutions found." << endl;
+    } else if (assertAll) {
+        cerr << "[Number of solutions: " << solutionCount << "]" << endl;
+    }
+    cerr << "[SMT solving (" << tag << "): over " << checkSatCalls
+         << " check-sat " << (checkSatCalls == 1 ? "call" : "calls")
+         << ", total: " << totalSeconds << "s]" << endl;
+}
+
+bool isTrivial(const string& buffer) {
+    return buffer.find("yes (trivially)") != string::npos ||
+           buffer.find("no (trivially)") != string::npos;
+}
+
+// ---------------------------------------------------------------------------
+// Z3 backend
+// ---------------------------------------------------------------------------
+
+struct FreeVar {
+    string name;
+    string sort;
+};
+
+vector<FreeVar> extractFreeVars(const string& buffer) {
     vector<FreeVar> result;
-    istringstream iss(m_buffer);
+    istringstream iss(buffer);
     string line;
     while (getline(iss, line)) {
         if (line.compare(0, 13, "(declare-fun ") != 0) continue;
@@ -125,191 +89,173 @@ vector<SMTSolverDriver::FreeVar> SMTSolverDriver::extractFreeVars() const {
     return result;
 }
 
-bool SMTSolverDriver::spawnSolver(int& solverIn, int& solverOut, pid_t& childPid) {
-    int inPipe[2], outPipe[2];
-    if (pipe(inPipe) < 0 || pipe(outPipe) < 0) {
-        cerr << "ERROR: pipe() failed." << endl;
-        return false;
-    }
-    childPid = fork();
-    if (childPid < 0) {
-        cerr << "ERROR: fork() failed." << endl;
-        return false;
-    }
-    if (childPid == 0) {
-        dup2(inPipe[0], STDIN_FILENO);
-        dup2(outPipe[1], STDOUT_FILENO);
-        close(inPipe[0]); close(inPipe[1]);
-        close(outPipe[0]); close(outPipe[1]);
-
-        string binary = m_backend.resolveBinary();
-        vector<string> extras = m_backend.extraArgs();
-
-        vector<char*> argv;
-        argv.push_back(const_cast<char*>(binary.c_str()));
-        for (auto& e : extras) argv.push_back(const_cast<char*>(e.c_str()));
-        argv.push_back(nullptr);
-
-        execvp(binary.c_str(), argv.data());
-        _exit(127);
-    }
-    close(inPipe[0]);
-    close(outPipe[1]);
-    solverIn = inPipe[1];
-    solverOut = outPipe[0];
-    return true;
-}
-
-bool SMTSolverDriver::writeAll(int fd, const string& s) {
-    const char* p = s.data();
-    size_t left = s.size();
-    while (left > 0) {
-        ssize_t w = write(fd, p, left);
-        if (w <= 0) return false;
-        p += w;
-        left -= (size_t)w;
-    }
-    return true;
-}
-
-string SMTSolverDriver::readLine(int fd) {
-    string line;
-    char c;
-    while (read(fd, &c, 1) == 1) {
-        if (c == '\n') {
-            if (line.empty()) continue;
-            return line;
-        }
-        if (c != '\r') line += c;
-    }
-    return line;
-}
-
-string SMTSolverDriver::readBalanced(int fd) {
-    string s;
-    int depth = 0;
-    bool started = false;
-    char c;
-    while (read(fd, &c, 1) == 1) {
-        if (!started) {
-            if (c == '(') { started = true; depth = 1; s += c; }
-            continue;
-        }
-        s += c;
-        if (c == '(') depth++;
-        else if (c == ')') {
-            depth--;
-            if (depth == 0) return s;
-        }
-    }
+string stripQuotes(const string& s) {
+    if (s.size() >= 2 && s.front() == '|' && s.back() == '|')
+        return s.substr(1, s.size() - 2);
     return s;
 }
 
-vector<SMTSolverDriver::Value>
-SMTSolverDriver::parseGetValueResponse(const string& s) {
-    vector<Value> out;
-    auto skipWs = [](const string& str, size_t& k) {
-        while (k < str.size() &&
-               (str[k]==' '||str[k]=='\n'||str[k]=='\t'||str[k]=='\r'))
-            k++;
-    };
-    size_t i = 0;
-    skipWs(s, i);
-    if (i >= s.size() || s[i] != '(') return out;
-    i++;
-    while (true) {
-        skipWs(s, i);
-        if (i >= s.size() || s[i] == ')') break;
-        if (s[i] != '(') { i++; continue; }
-        i++;
-        skipWs(s, i);
-        size_t nameStart = i;
-        while (i < s.size() &&
-               s[i]!=' ' && s[i]!='\t' && s[i]!='\n' && s[i]!=')')
-            i++;
-        string name = s.substr(nameStart, i - nameStart);
-        skipWs(s, i);
-        string val;
-        if (i < s.size() && s[i] == '(') {
-            int d = 1;
-            val += s[i++];
-            while (i < s.size() && d > 0) {
-                if (s[i] == '(') d++;
-                else if (s[i] == ')') d--;
-                val += s[i++];
+z3::expr makeZ3Const(z3::context& ctx, const FreeVar& fv) {
+    string n = stripQuotes(fv.name);
+    if (fv.sort == "Int")  return ctx.int_const(n.c_str());
+    if (fv.sort == "Bool") return ctx.bool_const(n.c_str());
+    unsigned w = 8;
+    size_t p = fv.sort.find("BitVec");
+    if (p != string::npos) {
+        size_t q = p + 6;
+        while (q < fv.sort.size() && !isdigit((unsigned char)fv.sort[q])) q++;
+        unsigned parsed = (unsigned)strtoul(fv.sort.c_str() + q, nullptr, 10);
+        if (parsed > 0) w = parsed;
+    }
+    return ctx.bv_const(n.c_str(), w);
+}
+
+string z3ValueToDecimal(const z3::expr& v) {
+    if (v.is_bool()) return v.is_true() ? "true" : "false";
+    return Z3_get_numeral_string(v.ctx(), v);
+}
+
+int runZ3(const string& buffer, bool assertAll, bool hasOptimize) {
+    vector<FreeVar> freeVars = extractFreeVars(buffer);
+    auto start = clock_t_::now();
+    int solutionCount = 0;
+    int checkSatCalls = 0;
+    try {
+        z3::context ctx;
+        vector<z3::expr> consts;
+        consts.reserve(freeVars.size());
+        for (const auto& fv : freeVars) consts.push_back(makeZ3Const(ctx, fv));
+
+        if (hasOptimize) {
+            z3::optimize opt(ctx);
+            opt.from_string(buffer.c_str());
+            checkSatCalls++;
+            if (opt.check() == z3::sat) {
+                z3::model m = opt.get_model();
+                vector<pair<string, string>> values;
+                for (size_t k = 0; k < consts.size(); k++)
+                    values.push_back({freeVars[k].name,
+                                      z3ValueToDecimal(m.eval(consts[k], true))});
+                solutionCount++;
+                printSolution(assertAll, solutionCount, values);
             }
         } else {
-            while (i < s.size() && s[i]!=' ' && s[i]!=')' && s[i]!='\n')
-                val += s[i++];
+            z3::solver s(ctx);
+            s.from_string(buffer.c_str());
+            while (true) {
+                checkSatCalls++;
+                z3::check_result r = s.check();
+                if (r == z3::unsat) break;
+                if (r == z3::unknown) {
+                    cerr << "Solver returned 'unknown' - could not determine "
+                            "satisfiability." << endl;
+                    break;
+                }
+                z3::model m = s.get_model();
+                vector<pair<string, string>> values;
+                z3::expr_vector eqs(ctx);
+                for (size_t k = 0; k < consts.size(); k++) {
+                    z3::expr val = m.eval(consts[k], true);
+                    values.push_back({freeVars[k].name, z3ValueToDecimal(val)});
+                    eqs.push_back(consts[k] == val);
+                }
+                solutionCount++;
+                printSolution(assertAll, solutionCount, values);
+                if (!assertAll || eqs.empty()) break;
+                s.add(!z3::mk_and(eqs));
+            }
         }
-        out.push_back(Value{name, val});
-        skipWs(s, i);
-        while (i < s.size() && s[i] != ')') i++;
-        if (i < s.size()) i++;
+    } catch (const z3::exception& e) {
+        cerr << "ERROR: Z3 failure: " << e.msg() << endl;
+        return 1;
     }
-    return out;
+    double total = std::chrono::duration<double>(clock_t_::now() - start).count();
+    printTail(solutionCount, assertAll, checkSatCalls, "z3", total);
+    return 0;
 }
 
-string SMTSolverDriver::toDecimal(const string& v) {
-    if (v.size() >= 2 && v[0] == '#' && (v[1] == 'x' || v[1] == 'X')) {
-        unsigned long long n = 0;
-        for (size_t k = 2; k < v.size(); k++) {
-            char c = v[k];
-            int d;
-            if (c >= '0' && c <= '9') d = c - '0';
-            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
-            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
-            else break;
-            n = n * 16 + d;
+// ---------------------------------------------------------------------------
+// cvc5 backend
+// ---------------------------------------------------------------------------
+
+string cvc5ValueToDecimal(const cvc5::Term& v) {
+    cvc5::Sort s = v.getSort();
+    if (s.isBitVector()) return v.getBitVectorValue(10);
+    if (s.isInteger())   return v.getIntegerValue();
+    if (s.isBoolean())   return v.getBooleanValue() ? "true" : "false";
+    return v.toString();
+}
+
+int runCVC5(const string& buffer, bool assertAll, bool hasOptimize) {
+    if (hasOptimize) {
+        cerr << "ERROR: solver 'cvc5' does not support (minimize)/(maximize)."
+             << endl
+             << "       Use -smtsolve=z3 for programs with minimize/maximize,"
+             << endl
+             << "       or -smt to emit SMT-LIB and drive a solver manually."
+             << endl;
+        return 1;
+    }
+    auto start = clock_t_::now();
+    int solutionCount = 0;
+    int checkSatCalls = 0;
+    try {
+        cvc5::TermManager tm;
+        cvc5::Solver slv(tm);
+        slv.setOption("produce-models", "true");
+        slv.setOption("incremental", "true");
+
+        cvc5::parser::SymbolManager sm(tm);
+        cvc5::parser::InputParser parser(&slv, &sm);
+        parser.setStringInput(cvc5::modes::InputLanguage::SMT_LIB_2_6, buffer,
+                              "ursa");
+        while (true) {
+            cvc5::parser::Command cmd = parser.nextCommand();
+            if (cmd.isNull()) break;
+            cmd.invoke(&slv, &sm, cout);
         }
-        return to_string(n);
-    }
-    if (v.size() >= 2 && v[0] == '#' && (v[1] == 'b' || v[1] == 'B')) {
-        unsigned long long n = 0;
-        for (size_t k = 2; k < v.size(); k++) {
-            if (v[k] != '0' && v[k] != '1') break;
-            n = n * 2 + (v[k] - '0');
+
+        vector<cvc5::Term> freeVars;
+        for (const cvc5::Term& t : sm.getDeclaredTerms())
+            if (!t.getSort().isArray()) freeVars.push_back(t);
+
+        while (true) {
+            checkSatCalls++;
+            if (!slv.checkSat().isSat()) break;
+            vector<pair<string, string>> values;
+            vector<cvc5::Term> eqs;
+            for (const cvc5::Term& t : freeVars) {
+                cvc5::Term v = slv.getValue(t);
+                values.push_back({t.getSymbol(), cvc5ValueToDecimal(v)});
+                eqs.push_back(tm.mkTerm(cvc5::Kind::EQUAL, {t, v}));
+            }
+            solutionCount++;
+            printSolution(assertAll, solutionCount, values);
+            if (!assertAll || eqs.empty()) break;
+            cvc5::Term conj =
+                (eqs.size() == 1) ? eqs[0] : tm.mkTerm(cvc5::Kind::AND, eqs);
+            slv.assertFormula(tm.mkTerm(cvc5::Kind::NOT, {conj}));
         }
-        return to_string(n);
+    } catch (const cvc5::parser::ParserException& e) {
+        cerr << "ERROR: cvc5 parser failure: " << e.getMessage() << endl;
+        return 1;
+    } catch (const cvc5::CVC5ApiException& e) {
+        cerr << "ERROR: cvc5 failure: " << e.getMessage() << endl;
+        return 1;
     }
-    if (v.size() > 3 && v[0] == '(' && v[1] == '-') {
-        size_t start = 2;
-        while (start < v.size() && v[start] == ' ') start++;
-        size_t end = v.find(')', start);
-        if (end != string::npos) return "-" + v.substr(start, end - start);
-    }
-    return v;
+    double total = std::chrono::duration<double>(clock_t_::now() - start).count();
+    printTail(solutionCount, assertAll, checkSatCalls, "cvc5", total);
+    return 0;
 }
 
-string SMTSolverDriver::buildGetValueCommand(const vector<FreeVar>& vars) {
-    string cmd = "(get-value (";
-    for (size_t k = 0; k < vars.size(); k++) {
-        if (k) cmd += " ";
-        cmd += vars[k].name;
-    }
-    cmd += "))\n";
-    return cmd;
-}
+}  // namespace
 
-string SMTSolverDriver::buildBlockingClause(const vector<Value>& values) {
-    string block = "(assert (not (and";
-    for (size_t k = 0; k < values.size(); k++) {
-        block += " (= " + values[k].name + " " + values[k].rawValue + ")";
+int SMTSolverDriver::run() {
+    if (isTrivial(m_buffer)) {
+        cout << m_buffer;
+        return 0;
     }
-    block += ")))\n";
-    return block;
-}
-
-void SMTSolverDriver::printSolution(int solutionNumber,
-                                    const vector<Value>& values) const {
-    if (m_assertAll) cout << "--> Solution " << solutionNumber << endl;
-    for (size_t k = 0; k < values.size(); k++) {
-        cout << unflattenArrayName(values[k].name) << "="
-             << toDecimal(values[k].rawValue) << ";" << endl;
-    }
-    if (m_assertAll) cout << endl;
-}
-
-void SMTSolverDriver::printTrivial() const {
-    cout << m_buffer;
+    return (m_solver == eSolverZ3)
+               ? runZ3(m_buffer, m_assertAll, m_hasOptimize)
+               : runCVC5(m_buffer, m_assertAll, m_hasOptimize);
 }
