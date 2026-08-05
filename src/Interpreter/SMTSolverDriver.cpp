@@ -24,6 +24,8 @@ namespace {
 
 using clock_t_ = std::chrono::steady_clock;
 
+// Helpers shared by the Z3 and cvc5 backends; compiled only when at least
+// one solver is linked in (otherwise they would be unused).
 #if defined(Z3_SUPPORT) || defined(CVC5_SUPPORT)
 
 string unflattenArrayName(const string& name) {

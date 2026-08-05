@@ -80,6 +80,7 @@ build time (the default builds both):
   cd src
   make                              # link both Z3 and cvc5 (default)
   make CVC5_SUPPORT=0               # Z3 only
+  make Z3_SUPPORT=0                 # cvc5 only
   make Z3_SUPPORT=0 CVC5_SUPPORT=0  # neither; -smt / -smtout still emit SMT-LIB
 
 Linking against a solver needs its development files (headers and libraries),

@@ -8,6 +8,7 @@ ADDFLAGS ?=
 # (-smtsolve=z3|cvc5). Each solver is optional and selected at build time:
 #   make                              # both (default)
 #   make CVC5_SUPPORT=0               # Z3 only
+#   make Z3_SUPPORT=0                 # cvc5 only
 #   make Z3_SUPPORT=0 CVC5_SUPPORT=0  # no in-process solving (-smt still emits SMT-LIB)
 # Prefixes may be overridden, e.g. make CVC5_PREFIX=/opt/cvc5. Z3 is
 # auto-detected via Homebrew; both default to /usr/local otherwise.
