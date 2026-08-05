@@ -1,8 +1,12 @@
 #include "SMTSolverDriver.hpp"
 
+#ifdef Z3_SUPPORT
 #include <z3++.h>
+#endif
+#ifdef CVC5_SUPPORT
 #include <cvc5/cvc5.h>
 #include <cvc5/cvc5_parser.h>
+#endif
 
 #include <iostream>
 #include <sstream>
@@ -19,6 +23,8 @@ using namespace std;
 namespace {
 
 using clock_t_ = std::chrono::steady_clock;
+
+#if defined(Z3_SUPPORT) || defined(CVC5_SUPPORT)
 
 string unflattenArrayName(const string& name) {
     static const regex r2d(R"(^(.+?)_(\d+)__(\d+)_$)");
@@ -51,6 +57,8 @@ void printTail(int solutionCount, bool assertAll, int checkSatCalls,
          << ", total: " << totalSeconds << "s]" << endl;
 }
 
+#endif  // Z3_SUPPORT || CVC5_SUPPORT
+
 bool isTrivial(const string& buffer) {
     return buffer.find("yes (trivially)") != string::npos ||
            buffer.find("no (trivially)") != string::npos;
@@ -59,6 +67,8 @@ bool isTrivial(const string& buffer) {
 // ---------------------------------------------------------------------------
 // Z3 backend
 // ---------------------------------------------------------------------------
+
+#ifdef Z3_SUPPORT
 
 struct FreeVar {
     string name;
@@ -174,9 +184,13 @@ int runZ3(const string& buffer, bool assertAll, bool hasOptimize) {
     return 0;
 }
 
+#endif  // Z3_SUPPORT
+
 // ---------------------------------------------------------------------------
 // cvc5 backend
 // ---------------------------------------------------------------------------
+
+#ifdef CVC5_SUPPORT
 
 string cvc5ValueToDecimal(const cvc5::Term& v) {
     cvc5::Sort s = v.getSort();
@@ -248,6 +262,8 @@ int runCVC5(const string& buffer, bool assertAll, bool hasOptimize) {
     return 0;
 }
 
+#endif  // CVC5_SUPPORT
+
 }  // namespace
 
 int SMTSolverDriver::run() {
@@ -255,7 +271,20 @@ int SMTSolverDriver::run() {
         cout << m_buffer;
         return 0;
     }
-    return (m_solver == eSolverZ3)
-               ? runZ3(m_buffer, m_assertAll, m_hasOptimize)
-               : runCVC5(m_buffer, m_assertAll, m_hasOptimize);
+    if (m_solver == eSolverZ3) {
+#ifdef Z3_SUPPORT
+        return runZ3(m_buffer, m_assertAll, m_hasOptimize);
+#else
+        cerr << "ERROR: this URSA build has no Z3 support "
+                "(rebuild with Z3_SUPPORT=1)." << endl;
+        return 1;
+#endif
+    }
+#ifdef CVC5_SUPPORT
+    return runCVC5(m_buffer, m_assertAll, m_hasOptimize);
+#else
+    cerr << "ERROR: this URSA build has no cvc5 support "
+            "(rebuild with CVC5_SUPPORT=1)." << endl;
+    return 1;
+#endif
 }
