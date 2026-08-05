@@ -53,12 +53,12 @@ Options:
 
 -smtlogic=QF_BV or QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV)
 
--smtsolve=z3 or cvc5 - drive the chosen SMT solver internally and print models
-   formatted the same as the SAT path. For `assert_all`, URSA enumerates all
-   satisfying models by adding blocking clauses between solver calls. Implies
-   -smt. Solver binary path is read from URSA_Z3 or URSA_CVC5 environment
-   variables; if unset, 'z3' / 'cvc5' from PATH are used. Composes with
-   -smtlogic (e.g., -smtlogic=QF_LIA -smtsolve=z3).
+-smtsolve=z3 or cvc5 - solve the emitted formula in-process with the linked
+   solver and print models formatted the same as the SAT path. For `assert_all`,
+   URSA enumerates all satisfying models by adding blocking clauses between
+   checks. Implies -smt. Composes with -smtlogic (e.g., -smtlogic=QF_LIA
+   -smtsolve=z3). Available only if URSA was built with support for that solver
+   (see "Building with SMT solvers" below).
 
 -smtout=<path> - write SMT-LIB output to the given file.
    Implies -smt. Composes with -smtlogic, but cannot be combined with -smtsolve.
@@ -71,35 +71,44 @@ NOTA BENE: If URSA is used with clasp as an underlying SAT solver and if some pr
 variable is irrelevant for the asserted constraint, then its different values are not
 considered within the set of all models (so the set of models may not be as expected).
 
-The SMT solvers (Z3, cvc5) are not bundled in this repository: they use their own
-build systems (CMake) and would inflate the repo by hundreds of MB. Install them
-once, place them on `$PATH` (or point `URSA_Z3` / `URSA_CVC5` at their binaries),
-and `-smtsolve` will find them.
+## Building with SMT solvers
+
+`-smtsolve` links Z3 and/or cvc5 as libraries and solves in the same process;
+no external solver binary is launched. Each solver is optional and selected at
+build time (the default builds both):
+
+  cd src
+  make                              # link both Z3 and cvc5 (default)
+  make CVC5_SUPPORT=0               # Z3 only
+  make Z3_SUPPORT=0 CVC5_SUPPORT=0  # neither; -smt / -smtout still emit SMT-LIB
+
+Linking against a solver needs its development files (headers and libraries),
+not just an executable. Point URSA at the install prefixes if they are not in
+the default location:
+
+  make Z3_PREFIX=/path/to/z3 CVC5_PREFIX=/path/to/cvc5
+
+Z3 is auto-detected via Homebrew (`brew --prefix z3`); both prefixes default to
+`/usr/local` otherwise.
 
 **Z3:**
 
-- macOS:   `brew install z3`
-- Linux:   `sudo apt install z3` (Debian/Ubuntu) or `sudo dnf install z3` (Fedora)
-- Windows: download the release archive from
-           https://github.com/Z3Prover/z3/releases (e.g. `z3-*-x64-win.zip`),
-           extract, and add `bin\z3.exe` to `PATH`.
+- macOS: `brew install z3`
+- Linux: `sudo apt install libz3-dev` (Debian/Ubuntu) or
+         `sudo dnf install z3-devel` (Fedora)
 
-**cvc5** (no package manager on any platform, use the official release archives
-from https://github.com/cvc5/cvc5/releases):
+**cvc5** (no package manager; use the official static release archives from
+https://github.com/cvc5/cvc5/releases):
 
-- macOS:   download `cvc5-macOS-arm64-static-gpl.zip` (Apple Silicon) or
-           `cvc5-macOS-x86_64-static-gpl.zip` (Intel), extract, and either place
-           `bin/cvc5` on `$PATH` or point `URSA_CVC5` at the full path.
-- Linux:   download `cvc5-Linux-x86_64-static-gpl.zip`, extract, place
-           `bin/cvc5` on `$PATH`.
-- Windows: download `cvc5-Win64-x86_64-static-gpl.zip`, extract, add `bin\`
-           to `PATH`.
+- macOS: `cvc5-macOS-arm64-static-gpl.zip` (Apple Silicon) or
+         `cvc5-macOS-x86_64-static-gpl.zip` (Intel)
+- Linux: `cvc5-Linux-x86_64-static-gpl.zip`
 
-Example: point URSA at custom install locations without touching `PATH`:
+Extract the cvc5 archive and pass its directory as `CVC5_PREFIX` (it contains
+`include/` and `lib/`).
 
-  export URSA_Z3=$HOME/tools/z3-4.13.0/bin/z3
-  export URSA_CVC5=$HOME/tools/cvc5-1.3.4/bin/cvc5
-  ./ursa -smtsolve=cvc5 < ../examples/Simple/system2unknowns.urs
+If `-smtsolve` is used for a solver that was not compiled in, URSA prints a
+clear error asking you to rebuild with the corresponding flag.
 
 ## SMT-LIB output
 
@@ -107,7 +116,7 @@ With the `-smt` flag URSA does not run a SAT solver. Instead it translates the
 constraints into an SMT-LIB formula and prints it to standard output. The target
 logic is chosen with `-smtlogic`:
 
-- `QF_BV` (default) - bit-blasts the constraints into fixed-width bit-vectors.
+- `QF_BV` (default) - emits the constraints as fixed-width bit-vector terms.
 - `QF_LIA` - emits linear integer arithmetic over unbounded `Int` values.
 
 If any array is accessed with a symbolic index, the logic is automatically
