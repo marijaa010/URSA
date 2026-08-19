@@ -104,6 +104,14 @@ static void printSymbol(ostream& out, const string& name) {
         out << name;
 }
 
+static void printIntConst(ostream& out, uint64_t value) {
+    int64_t v = (int64_t)value;
+    if (v < 0)
+        out << "(- " << (uint64_t)(-v) << ")";
+    else
+        out << v;
+}
+
 static void printBinary(ostream& out, const char* op, const SMTExpr* e) {
     out << "(" << op << " ";
     e->children[0]->print(out);
@@ -165,7 +173,7 @@ void SMTExpr::print(ostream& out) const {
 
         case SMT_ITE:     printTernary(out, "ite", this); break;
 
-        case INT_CONST:   out << constValue; break;
+        case INT_CONST:   printIntConst(out, constValue); break;
         case INT_VAR:     printSymbol(out, varName); break;
         case INT_ADD:     printBinary(out, "+", this); break;
         case INT_SUB:     printBinary(out, "-", this); break;
@@ -239,7 +247,7 @@ static void emitCompact(std::ostream& out, const SMTExpr* e, const EmitCtx* ctx)
         case BV_VAR:      printSymbol(out, e->varName); return;
         case BOOL_CONST:  out << (e->boolValue ? "true" : "false"); return;
         case BOOL_VAR:    printSymbol(out, e->varName); return;
-        case INT_CONST:   out << e->constValue; return;
+        case INT_CONST:   printIntConst(out, e->constValue); return;
         case INT_VAR:     printSymbol(out, e->varName); return;
         case ARRAY_VAR:   printSymbol(out, e->varName); return;
         default: break;

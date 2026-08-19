@@ -118,8 +118,9 @@ SMTNumber SMTNumber::operator/(const SMTNumber& other) const {
             cerr << "ERROR: division by zero in a ground expression." << endl;
             exit(1);
         }
-        uint64_t r = m_groundValue / other.m_groundValue;
-        if (!isLIAMode()) r = maskTo(r, m_width);
+        uint64_t r = isLIAMode()
+            ? (uint64_t)((int64_t)m_groundValue / (int64_t)other.m_groundValue)
+            : maskTo(m_groundValue / other.m_groundValue, m_width);
         return SMTNumber(r, m_width);
     }
     if (other.m_isGround && other.m_groundValue == 1) return *this;
@@ -140,8 +141,9 @@ SMTNumber SMTNumber::operator%(const SMTNumber& other) const {
             cerr << "ERROR: modulo by zero in a ground expression." << endl;
             exit(1);
         }
-        uint64_t r = m_groundValue % other.m_groundValue;
-        if (!isLIAMode()) r = maskTo(r, m_width);
+        uint64_t r = isLIAMode()
+            ? (uint64_t)((int64_t)m_groundValue % (int64_t)other.m_groundValue)
+            : maskTo(m_groundValue % other.m_groundValue, m_width);
         return SMTNumber(r, m_width);
     }
     if (other.m_isGround && other.m_groundValue == 1) return SMTNumber((uint64_t)0, m_width);
@@ -261,7 +263,9 @@ SMTNumber SMTNumber::sgn() const {
 
 #define REL_OP(OP_CPP, BV_MAKE, INT_MAKE) \
     if (m_isGround && other.m_isGround) { \
-        bool r = (m_groundValue OP_CPP other.m_groundValue); \
+        bool r = isLIAMode() \
+            ? ((int64_t)m_groundValue OP_CPP (int64_t)other.m_groundValue) \
+            : (m_groundValue OP_CPP other.m_groundValue); \
         return SMTBoolean(SMTFactory::makeBoolConst(r), true, r); \
     } \
     if (isLIAMode()) \

@@ -533,10 +533,12 @@ void Interpreter::SolveOptimizationProblem(nodeType *p) {
                 ExecuteCommand(*i); 
             if(SolveConstraint(p,false)) {
                 best = nOptimalCandidate;
-                nMax = nOptimalCandidate-1;
+                if (bMaximize) nMin = nOptimalCandidate+1;
+                else           nMax = nOptimalCandidate-1;
             }
             else {
-                nMin = nOptimalCandidate+1;
+                if (bMaximize) nMax = nOptimalCandidate-1;
+                else           nMin = nOptimalCandidate+1;
             }
         }
         cout << endl;

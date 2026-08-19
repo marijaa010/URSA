@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <set>
 #include <utility>
 #include <regex>
 #include <chrono>
@@ -59,6 +60,35 @@ void printTail(int solutionCount, bool assertAll, int checkSatCalls,
          << ", total: " << totalSeconds << "s]" << endl;
 }
 
+uint64_t parseSmtLiteral(const string& tok) {
+    if (tok.size() > 2 && tok[0] == '#' && (tok[1] == 'x' || tok[1] == 'X'))
+        return strtoull(tok.c_str() + 2, nullptr, 16);
+    if (tok.size() > 2 && tok[0] == '#' && (tok[1] == 'b' || tok[1] == 'B'))
+        return strtoull(tok.c_str() + 2, nullptr, 2);
+    return strtoull(tok.c_str(), nullptr, 10);
+}
+
+vector<uint64_t> accessedArrayIndices(const string& buffer,
+                                      const string& arrName) {
+    vector<uint64_t> out;
+    set<uint64_t> seen;
+    const string needle = "(select " + arrName + " ";
+    size_t pos = 0;
+    while ((pos = buffer.find(needle, pos)) != string::npos) {
+        size_t p = pos + needle.size();
+        size_t e = p;
+        while (e < buffer.size() && buffer[e] != ' ' && buffer[e] != ')') e++;
+        string tok = buffer.substr(p, e - p);
+        pos = e;
+        if (tok.empty()) continue;
+        bool literal = (tok[0] == '#') || isdigit((unsigned char)tok[0]);
+        if (!literal) continue;
+        uint64_t v = parseSmtLiteral(tok);
+        if (seen.insert(v).second) out.push_back(v);
+    }
+    return out;
+}
+
 #endif  // Z3_SUPPORT || CVC5_SUPPORT
 
 bool isTrivial(const string& buffer) {
@@ -97,6 +127,33 @@ vector<FreeVar> extractFreeVars(const string& buffer) {
         string sort = line.substr(sortStart, sortEnd - sortStart - 1);
         if (sort.find("Array") != string::npos) continue;
         result.push_back(FreeVar{name, sort});
+    }
+    return result;
+}
+
+struct ArrayFree {
+    string name;
+    bool intIndex; unsigned indexWidth;
+    bool intElem;  unsigned elemWidth;
+};
+
+vector<ArrayFree> extractArrayVars(const string& buffer) {
+    vector<ArrayFree> result;
+    static const regex bvArr(
+        R"(\(declare-fun ([^ ]+) \(\) \(Array \(_ BitVec (\d+)\) \(_ BitVec (\d+)\)\)\))");
+    static const regex intArr(
+        R"(\(declare-fun ([^ ]+) \(\) \(Array Int Int\)\))");
+    istringstream iss(buffer);
+    string line;
+    while (getline(iss, line)) {
+        smatch m;
+        if (regex_search(line, m, bvArr)) {
+            result.push_back(ArrayFree{m[1].str(), false,
+                                       (unsigned)stoul(m[2].str()), false,
+                                       (unsigned)stoul(m[3].str())});
+        } else if (regex_search(line, m, intArr)) {
+            result.push_back(ArrayFree{m[1].str(), true, 0, true, 0});
+        }
     }
     return result;
 }
@@ -154,6 +211,29 @@ int runZ3(const string& buffer, bool assertAll, bool hasOptimize) {
         } else {
             z3::solver s(ctx);
             s.from_string(buffer.c_str());
+
+            set<string> scalarNames;
+            for (const auto& fv : freeVars) scalarNames.insert(fv.name);
+            struct CellExpr { z3::expr sel; string display; bool mirrored; };
+            vector<CellExpr> cells;
+            for (const auto& av : extractArrayVars(buffer)) {
+                z3::sort idxSort  = av.intIndex ? ctx.int_sort()
+                                                : ctx.bv_sort(av.indexWidth);
+                z3::sort elemSort = av.intElem  ? ctx.int_sort()
+                                                : ctx.bv_sort(av.elemWidth);
+                z3::expr arr = ctx.constant(
+                    av.name.c_str(), ctx.array_sort(idxSort, elemSort));
+                for (uint64_t idx : accessedArrayIndices(buffer, av.name)) {
+                    z3::expr iexpr = av.intIndex
+                        ? ctx.int_val((int)idx)
+                        : ctx.bv_val((int)idx, av.indexWidth);
+                    string mirror = av.name + "_" + std::to_string(idx) + "_";
+                    string disp   = av.name + "[" + std::to_string(idx) + "]";
+                    cells.push_back({z3::select(arr, iexpr), disp,
+                                     scalarNames.count(mirror) > 0});
+                }
+            }
+
             while (true) {
                 checkSatCalls++;
                 z3::check_result r = s.check();
@@ -170,6 +250,12 @@ int runZ3(const string& buffer, bool assertAll, bool hasOptimize) {
                     z3::expr val = m.eval(consts[k], true);
                     values.push_back({freeVars[k].name, z3ValueToDecimal(val)});
                     eqs.push_back(consts[k] == val);
+                }
+                for (const auto& c : cells) {
+                    z3::expr val = m.eval(c.sel, true);
+                    if (!c.mirrored)
+                        values.push_back({c.display, z3ValueToDecimal(val)});
+                    eqs.push_back(c.sel == val);
                 }
                 solutionCount++;
                 printSolution(assertAll, solutionCount, values);
@@ -232,8 +318,27 @@ int runCVC5(const string& buffer, bool assertAll, bool hasOptimize) {
         }
 
         vector<cvc5::Term> freeVars;
-        for (const cvc5::Term& t : sm.getDeclaredTerms())
-            if (!t.getSort().isArray()) freeVars.push_back(t);
+        vector<cvc5::Term> arrayTerms;
+        set<string> scalarNames;
+        for (const cvc5::Term& t : sm.getDeclaredTerms()) {
+            if (t.getSort().isArray()) arrayTerms.push_back(t);
+            else { freeVars.push_back(t); scalarNames.insert(t.getSymbol()); }
+        }
+
+        struct CellTerm { cvc5::Term sel; string display; bool mirrored; };
+        vector<CellTerm> cells;
+        for (const cvc5::Term& arr : arrayTerms) {
+            cvc5::Sort idxSort = arr.getSort().getArrayIndexSort();
+            for (uint64_t idx : accessedArrayIndices(buffer, arr.getSymbol())) {
+                cvc5::Term iterm = idxSort.isBitVector()
+                    ? tm.mkBitVector(idxSort.getBitVectorSize(), idx)
+                    : tm.mkInteger((int64_t)idx);
+                cvc5::Term sel = tm.mkTerm(cvc5::Kind::SELECT, {arr, iterm});
+                string mirror = arr.getSymbol() + "_" + std::to_string(idx) + "_";
+                string disp   = arr.getSymbol() + "[" + std::to_string(idx) + "]";
+                cells.push_back({sel, disp, scalarNames.count(mirror) > 0});
+            }
+        }
 
         while (true) {
             checkSatCalls++;
@@ -244,6 +349,12 @@ int runCVC5(const string& buffer, bool assertAll, bool hasOptimize) {
                 cvc5::Term v = slv.getValue(t);
                 values.push_back({t.getSymbol(), cvc5ValueToDecimal(v)});
                 eqs.push_back(tm.mkTerm(cvc5::Kind::EQUAL, {t, v}));
+            }
+            for (const auto& c : cells) {
+                cvc5::Term v = slv.getValue(c.sel);
+                if (!c.mirrored)
+                    values.push_back({c.display, cvc5ValueToDecimal(v)});
+                eqs.push_back(tm.mkTerm(cvc5::Kind::EQUAL, {c.sel, v}));
             }
             solutionCount++;
             printSolution(assertAll, solutionCount, values);
