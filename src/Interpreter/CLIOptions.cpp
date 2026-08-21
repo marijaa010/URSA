@@ -3,6 +3,7 @@
 #include <iostream>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <cctype>
 
 extern unsigned int iAbstractNumberLength;
@@ -48,6 +49,12 @@ CLIOptions parseCLIArgs(int argc, char** argv) {
 
         if (!strcmp(argv[i], "-smt")) { opts.smtMode = true; continue; }
         if (!strcmp(argv[i], "-smtlogic=QF_LIA")) {
+#ifndef GMP_SUPPORT
+            cerr << "ERROR: QF_LIA requires arbitrary-precision integers, "
+                 << "which need GMP. This build was made with GMP_SUPPORT=0; "
+                 << "rebuild with GMP enabled to use QF_LIA." << endl;
+            exit(1);
+#endif
             opts.smtMode = true; opts.smtLogic = eLogicQF_LIA; continue;
         }
         if (!strcmp(argv[i], "-smtlogic=QF_BV")) {

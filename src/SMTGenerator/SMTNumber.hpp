@@ -27,6 +27,21 @@
 #include <string>
 #include <cstdint>
 
+/**
+ * @brief Ground integer type used for QF_LIA constant folding.
+ *
+ * With GMP (the default) it is arbitrary-precision (mpz_class), matching the
+ * unbounded integers of QF_LIA. Without GMP it is a 64-bit signed integer and
+ * QF_LIA is refused at startup, so this narrower type is used only to compile.
+ * QF_BV keeps its fixed-width uint64 ground values and does not use this type.
+ */
+#ifdef GMP_SUPPORT
+#include <gmpxx.h>
+typedef mpz_class LiaGround;
+#else
+typedef int64_t LiaGround;
+#endif
+
 class SMTBoolean;
 
 /**
@@ -75,6 +90,17 @@ public:
      * @param groundVal The corresponding ground value if `isGround`.
      */
     SMTNumber(SMTExpr* expr, bool isGround = false, uint64_t groundVal = 0);
+
+    /**
+     * @brief Builds a ground literal from its source text, preserving the
+     *        exact value. In QF_LIA the literal is parsed at arbitrary
+     *        precision so values beyond 64 bits are not truncated; in
+     *        QF_BV it is parsed and masked to `width` bits.
+     * @param literal Numeric literal as written in the program
+     *                (decimal, `0x` hex, or `0b` binary).
+     * @param width   Bit-width, used only in QF_BV.
+     */
+    static SMTNumber fromIntLiteral(const char* literal, int width);
 
     SMTExpr* getExpr() const { return m_expr; }
     int getWidth() const { return m_width; }
@@ -146,7 +172,11 @@ private:
     SMTExpr* m_expr;
     int m_width;
     bool m_isGround;
-    uint64_t m_groundValue;
+    uint64_t m_groundValue;   ///< Authoritative ground value in QF_BV.
+    LiaGround m_groundBig;     ///< Authoritative ground value in QF_LIA.
+
+    /// Builds a QF_LIA ground SMTNumber from an arbitrary-precision value.
+    static SMTNumber liaGround(const LiaGround& v);
 
     static uint64_t maskTo(uint64_t v, int width);
 };

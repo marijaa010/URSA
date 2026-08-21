@@ -34,9 +34,23 @@ LDFLAGS += -L$(CVC5_PREFIX)/lib -lcvc5parser -lcvc5 -lcadical -lcln -lglpk \
            -lpicpoly -lpicpolyxx -lcocoa -lgmpxx -lgmp
 endif
 
+# GMP provides arbitrary-precision integers for QF_LIA, so integer literals
+# and folded constants are not truncated to 64 bits. On by default; with
+# GMP_SUPPORT=0 the SAT and QF_BV paths still build and QF_LIA is refused.
+GMP_SUPPORT ?= 1
+GMP_FLAGS =
+ifeq ($(GMP_SUPPORT),1)
+GMP_PREFIX ?= $(shell brew --prefix gmp 2>/dev/null || echo /usr/local)
+GMP_FLAGS = -DGMP_SUPPORT -I$(GMP_PREFIX)/include
+# When cvc5 is linked it already provides GMP; otherwise link it here.
+ifneq ($(CVC5_SUPPORT),1)
+LDFLAGS += -L$(GMP_PREFIX)/lib -lgmpxx -lgmp
+endif
+endif
+
 INCLUDE =-IAbstractNumbers -IParser -IInterpreter -IUtils -ISMTGenerator -ISATsolvers -ISATsolvers/clasp_solver -ISATsolvers/clasp_solver/include -ISATsolvers/clasp_solver/program_opts -ISATsolvers/ArgoSATsolver -ISATsolvers/ArgoSATsolver/basic-types -ISATsolvers/ArgoSATsolver/auxiliary -ISATsolvers/ArgoSATsolver/listeners -ISATsolvers/ArgoSATsolver/strategies -ISATsolvers/minisat
 
-ALL_CXXFLAGS = $(CXXFLAGS) -W -Wall $(INCLUDE)  $(ADDFLAGS)
+ALL_CXXFLAGS = $(CXXFLAGS) -W -Wall $(INCLUDE) $(GMP_FLAGS) $(ADDFLAGS)
 
 sources := $(wildcard Interpreter/*.cpp)
 sources += $(wildcard AbstractNumbers/*.cpp)

@@ -15,8 +15,10 @@ struct SMTExprHash {
         h ^= std::hash<int>{}(e->width) + 0x9e3779b9 + (h << 6) + (h >> 2);
         switch (e->type) {
             case BV_CONST:
-            case INT_CONST:
                 h ^= std::hash<uint64_t>{}(e->constValue) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                break;
+            case INT_CONST:
+                h ^= std::hash<std::string>{}(e->constText) + 0x9e3779b9 + (h << 6) + (h >> 2);
                 break;
             case BOOL_CONST:
                 h ^= std::hash<bool>{}(e->boolValue) + 0x9e3779b9 + (h << 6) + (h >> 2);
@@ -42,8 +44,8 @@ struct SMTExprEq {
         if (a->type != b->type) return false;
         if (a->width != b->width) return false;
         switch (a->type) {
-            case BV_CONST:
-            case INT_CONST:   return a->constValue == b->constValue;
+            case BV_CONST:    return a->constValue == b->constValue;
+            case INT_CONST:   return a->constText == b->constText;
             case BOOL_CONST:  return a->boolValue == b->boolValue;
             case BV_VAR:
             case BOOL_VAR:
@@ -104,12 +106,13 @@ static void printSymbol(ostream& out, const string& name) {
         out << name;
 }
 
-static void printIntConst(ostream& out, uint64_t value) {
-    int64_t v = (int64_t)value;
-    if (v < 0)
-        out << "(- " << (uint64_t)(-v) << ")";
+static void printIntConst(ostream& out, const string& text) {
+    // SMT-LIB has no negative numeric literals; a negative value is the
+    // application of unary minus to its magnitude.
+    if (!text.empty() && text[0] == '-')
+        out << "(- " << text.substr(1) << ")";
     else
-        out << v;
+        out << text;
 }
 
 static void printBinary(ostream& out, const char* op, const SMTExpr* e) {
@@ -173,7 +176,7 @@ void SMTExpr::print(ostream& out) const {
 
         case SMT_ITE:     printTernary(out, "ite", this); break;
 
-        case INT_CONST:   printIntConst(out, constValue); break;
+        case INT_CONST:   printIntConst(out, constText); break;
         case INT_VAR:     printSymbol(out, varName); break;
         case INT_ADD:     printBinary(out, "+", this); break;
         case INT_SUB:     printBinary(out, "-", this); break;
@@ -247,7 +250,7 @@ static void emitCompact(std::ostream& out, const SMTExpr* e, const EmitCtx* ctx)
         case BV_VAR:      printSymbol(out, e->varName); return;
         case BOOL_CONST:  out << (e->boolValue ? "true" : "false"); return;
         case BOOL_VAR:    printSymbol(out, e->varName); return;
-        case INT_CONST:   printIntConst(out, e->constValue); return;
+        case INT_CONST:   printIntConst(out, e->constText); return;
         case INT_VAR:     printSymbol(out, e->varName); return;
         case ARRAY_VAR:   printSymbol(out, e->varName); return;
         default: break;
@@ -490,7 +493,12 @@ SMTExpr* SMTFactory::makeIte(SMTExpr* cond, SMTExpr* thenE, SMTExpr* elseE) {
 
 SMTExpr* SMTFactory::makeIntConst(uint64_t value) {
     SMTExpr* e = new SMTExpr(INT_CONST, 0);
-    e->constValue = value;
+    e->constText = std::to_string((int64_t)value);
+    return intern(e);
+}
+SMTExpr* SMTFactory::makeIntConst(const std::string& decimal) {
+    SMTExpr* e = new SMTExpr(INT_CONST, 0);
+    e->constText = decimal;
     return intern(e);
 }
 SMTExpr* SMTFactory::makeIntVar(const string& name) {

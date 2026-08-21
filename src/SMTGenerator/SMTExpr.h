@@ -109,7 +109,8 @@ public:
     std::vector<SMTExpr*> children;    ///< Operand nodes (hash-consed).
 
     std::string varName;               ///< Set only for *_VAR and *_CONST-with-name nodes.
-    uint64_t constValue;               ///< Set only for BV_CONST / INT_CONST.
+    uint64_t constValue;               ///< Set only for BV_CONST.
+    std::string constText;             ///< Exact signed decimal, set only for INT_CONST.
     bool boolValue;                    ///< Set only for BOOL_CONST.
 
     int indexWidth;                    ///< For ARRAY_VAR: bit-width of the index sort.
@@ -239,6 +240,7 @@ public:
     /// @name Linear integer constructors (QF_LIA theory)
     ///@{
     static SMTExpr* makeIntConst(uint64_t value);
+    static SMTExpr* makeIntConst(const std::string& decimal);
     static SMTExpr* makeIntVar(const std::string& name);
     static SMTExpr* makeIntAdd(SMTExpr* a, SMTExpr* b);
     static SMTExpr* makeIntSub(SMTExpr* a, SMTExpr* b);

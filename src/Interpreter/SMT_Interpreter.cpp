@@ -16,37 +16,6 @@ extern eSMTLogic bSMTLogic;
 extern bool bSMTSolveMode;
 
 
-static uint64_t parseIntLiteral(const char* s) {
-    if (!s) return 0;
-    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
-        uint64_t v = 0;
-        for (const char* p = s + 2; *p; p++) {
-            char c = *p;
-            int d = (c >= '0' && c <= '9') ? c - '0'
-                  : (c >= 'a' && c <= 'f') ? c - 'a' + 10
-                  : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
-            if (d < 0) break;
-            v = (v << 4) | (uint64_t)d;
-        }
-        return v;
-    }
-    if (s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) {
-        uint64_t v = 0;
-        for (const char* p = s + 2; *p; p++) {
-            if (*p != '0' && *p != '1') break;
-            v = (v << 1) | (uint64_t)(*p - '0');
-        }
-        return v;
-    }
-    uint64_t v = 0;
-    for (const char* p = s; *p; p++) {
-        if (*p < '0' || *p > '9') break;
-        v = v * 10 + (uint64_t)(*p - '0');
-    }
-    return v;
-}
-
-
 bool SMTInterpreter::IsNumberId(nodeType *p) {
     return ((p->type == typeId) && (*(p->id.i) == 'n')) ||
            ((p->opr.oper == '@') && (*(p->opr.op[0]->id.i) == 'n'));
@@ -228,7 +197,7 @@ SMTNumber SMTInterpreter::ReadNumber(nodeType *p) {
     if (!p) return SMTNumber((uint64_t)0, (int)iAbstractNumberLength);
     switch (p->type) {
       case typeIntConst:
-        return SMTNumber(parseIntLiteral(p->intConst.value), (int)iAbstractNumberLength);
+        return SMTNumber::fromIntLiteral(p->intConst.value, (int)iAbstractNumberLength);
       case typeId:
         return m_ST.getIntValue(p->id.i);
       case typeOpr:

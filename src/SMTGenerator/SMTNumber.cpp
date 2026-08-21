@@ -10,6 +10,35 @@ extern eSMTLogic bSMTLogic;
 
 static inline bool isLIAMode() { return bSMTLogic == eLogicQF_LIA; }
 
+static std::string liaToString(const LiaGround& v) {
+#ifdef GMP_SUPPORT
+    return v.get_str();
+#else
+    return std::to_string(v);
+#endif
+}
+
+static uint64_t liaToU64(const LiaGround& v) {
+#ifdef GMP_SUPPORT
+    return (uint64_t)mpz_get_ui(v.get_mpz_t());  // low bits; used only for small indices/bounds
+#else
+    return (uint64_t)v;
+#endif
+}
+
+static LiaGround liaFromLiteral(const char* s) {
+    if (!s) return LiaGround(0);
+#ifdef GMP_SUPPORT
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) return mpz_class(s + 2, 16);
+    if (s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) return mpz_class(s + 2, 2);
+    return mpz_class(s, 10);
+#else
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) return (int64_t)strtoull(s + 2, nullptr, 16);
+    if (s[0] == '0' && (s[1] == 'b' || s[1] == 'B')) return (int64_t)strtoull(s + 2, nullptr, 2);
+    return (int64_t)strtoll(s, nullptr, 10);
+#endif
+}
+
 [[noreturn]] static void liaUnsupported(const char* op) {
     cerr << "ERROR: operator '" << op << "' is not supported in QF_LIA mode."
          << endl;
@@ -31,17 +60,21 @@ uint64_t SMTNumber::GetGroundValueUnsigned() const {
 }
 
 SMTNumber::SMTNumber()
-    : m_expr(nullptr), m_width(0), m_isGround(true), m_groundValue(0) {}
+    : m_expr(nullptr), m_width(0), m_isGround(true),
+      m_groundValue(0), m_groundBig(0) {}
 
 SMTNumber::SMTNumber(int width)
-    : m_width(width), m_isGround(true), m_groundValue(0) {
+    : m_width(width), m_isGround(true), m_groundValue(0), m_groundBig(0) {
     m_expr = isLIAMode() ? SMTFactory::makeIntConst(0)
                          : SMTFactory::makeBvConst(0, width);
 }
 
 SMTNumber::SMTNumber(uint64_t value, int width)
-    : m_width(width), m_isGround(true) {
+    : m_width(width), m_isGround(true), m_groundValue(0), m_groundBig(0) {
     if (isLIAMode()) {
+        // In QF_LIA only small non-negative values reach this (0, 1, indices);
+        // large literals and folded results go through fromIntLiteral/liaGround.
+        m_groundBig = (long)value;
         m_groundValue = value;
         m_expr = SMTFactory::makeIntConst(value);
     } else {
@@ -51,7 +84,7 @@ SMTNumber::SMTNumber(uint64_t value, int width)
 }
 
 SMTNumber::SMTNumber(const string& varName, int width)
-    : m_width(width), m_isGround(false), m_groundValue(0) {
+    : m_width(width), m_isGround(false), m_groundValue(0), m_groundBig(0) {
     m_expr = isLIAMode() ? SMTFactory::makeIntVar(varName)
                          : SMTFactory::makeBvVar(varName, width);
 }
@@ -60,7 +93,23 @@ SMTNumber::SMTNumber(SMTExpr* expr, bool isGround, uint64_t groundVal)
     : m_expr(expr), m_width(expr ? expr->width : 0),
       m_isGround(isGround),
       m_groundValue(!isGround ? 0
-                    : (isLIAMode() ? groundVal : maskTo(groundVal, m_width))) {}
+                    : (isLIAMode() ? groundVal : maskTo(groundVal, m_width))),
+      m_groundBig((isGround && isLIAMode()) ? (long)groundVal : 0L) {}
+
+SMTNumber SMTNumber::liaGround(const LiaGround& v) {
+    SMTNumber n(SMTFactory::makeIntConst(liaToString(v)), true, 0);
+    n.m_groundBig = v;
+    n.m_groundValue = liaToU64(v);
+    return n;
+}
+
+SMTNumber SMTNumber::fromIntLiteral(const char* literal, int width) {
+    if (isLIAMode())
+        return liaGround(liaFromLiteral(literal));
+    // QF_BV: parse and mask to width.
+    LiaGround v = liaFromLiteral(literal);
+    return SMTNumber(liaToU64(v), width);
+}
 
 static inline uint64_t allOnes(int width) {
     return (width >= 64) ? ~0ULL : ((1ULL << width) - 1);
@@ -68,12 +117,11 @@ static inline uint64_t allOnes(int width) {
 
 SMTNumber SMTNumber::operator+(const SMTNumber& other) const {
     if (m_isGround && other.m_isGround) {
-        uint64_t r = m_groundValue + other.m_groundValue;
-        if (!isLIAMode()) r = maskTo(r, m_width);
-        return SMTNumber(r, m_width);
+        if (isLIAMode()) return liaGround(m_groundBig + other.m_groundBig);
+        return SMTNumber(maskTo(m_groundValue + other.m_groundValue, m_width), m_width);
     }
-    if (m_isGround && m_groundValue == 0) return other;
-    if (other.m_isGround && other.m_groundValue == 0) return *this;
+    if (m_isGround && (isLIAMode() ? m_groundBig == 0 : m_groundValue == 0)) return other;
+    if (other.m_isGround && (isLIAMode() ? other.m_groundBig == 0 : other.m_groundValue == 0)) return *this;
     SMTExpr* node = isLIAMode() ? SMTFactory::makeIntAdd(m_expr, other.m_expr)
                                 : SMTFactory::makeBvAdd(m_expr, other.m_expr);
     return SMTNumber(node);
@@ -81,12 +129,11 @@ SMTNumber SMTNumber::operator+(const SMTNumber& other) const {
 
 SMTNumber SMTNumber::operator-(const SMTNumber& other) const {
     if (m_isGround && other.m_isGround) {
-        uint64_t r = m_groundValue - other.m_groundValue;
-        if (!isLIAMode()) r = maskTo(r, m_width);
-        return SMTNumber(r, m_width);
+        if (isLIAMode()) return liaGround(m_groundBig - other.m_groundBig);
+        return SMTNumber(maskTo(m_groundValue - other.m_groundValue, m_width), m_width);
     }
-    if (other.m_isGround && other.m_groundValue == 0) return *this;
-    if (m_isGround && m_groundValue == 0) return other.negate();
+    if (other.m_isGround && (isLIAMode() ? other.m_groundBig == 0 : other.m_groundValue == 0)) return *this;
+    if (m_isGround && (isLIAMode() ? m_groundBig == 0 : m_groundValue == 0)) return other.negate();
     SMTExpr* node = isLIAMode() ? SMTFactory::makeIntSub(m_expr, other.m_expr)
                                 : SMTFactory::makeBvSub(m_expr, other.m_expr);
     return SMTNumber(node);
@@ -94,14 +141,13 @@ SMTNumber SMTNumber::operator-(const SMTNumber& other) const {
 
 SMTNumber SMTNumber::operator*(const SMTNumber& other) const {
     if (m_isGround && other.m_isGround) {
-        uint64_t r = m_groundValue * other.m_groundValue;
-        if (!isLIAMode()) r = maskTo(r, m_width);
-        return SMTNumber(r, m_width);
+        if (isLIAMode()) return liaGround(m_groundBig * other.m_groundBig);
+        return SMTNumber(maskTo(m_groundValue * other.m_groundValue, m_width), m_width);
     }
-    if (m_isGround && m_groundValue == 0) return *this;
-    if (other.m_isGround && other.m_groundValue == 0) return other;
-    if (m_isGround && m_groundValue == 1) return other;
-    if (other.m_isGround && other.m_groundValue == 1) return *this;
+    if (m_isGround && (isLIAMode() ? m_groundBig == 0 : m_groundValue == 0)) return *this;
+    if (other.m_isGround && (isLIAMode() ? other.m_groundBig == 0 : other.m_groundValue == 0)) return other;
+    if (m_isGround && (isLIAMode() ? m_groundBig == 1 : m_groundValue == 1)) return other;
+    if (other.m_isGround && (isLIAMode() ? other.m_groundBig == 1 : other.m_groundValue == 1)) return *this;
     if (isLIAMode() && !m_isGround && !other.m_isGround) {
         cerr << "ERROR: nonlinear multiplication (var * var) is not allowed"
              << " in QF_LIA mode." << endl;
@@ -114,17 +160,15 @@ SMTNumber SMTNumber::operator*(const SMTNumber& other) const {
 
 SMTNumber SMTNumber::operator/(const SMTNumber& other) const {
     if (m_isGround && other.m_isGround) {
-        if (other.m_groundValue == 0) {
+        if (isLIAMode() ? other.m_groundBig == 0 : other.m_groundValue == 0) {
             cerr << "ERROR: division by zero in a ground expression." << endl;
             exit(1);
         }
-        uint64_t r = isLIAMode()
-            ? (uint64_t)((int64_t)m_groundValue / (int64_t)other.m_groundValue)
-            : maskTo(m_groundValue / other.m_groundValue, m_width);
-        return SMTNumber(r, m_width);
+        if (isLIAMode()) return liaGround(m_groundBig / other.m_groundBig);
+        return SMTNumber(maskTo(m_groundValue / other.m_groundValue, m_width), m_width);
     }
-    if (other.m_isGround && other.m_groundValue == 1) return *this;
-    if (m_isGround && m_groundValue == 0) return *this;
+    if (other.m_isGround && (isLIAMode() ? other.m_groundBig == 1 : other.m_groundValue == 1)) return *this;
+    if (m_isGround && (isLIAMode() ? m_groundBig == 0 : m_groundValue == 0)) return *this;
     if (isLIAMode() && !other.m_isGround) {
         cerr << "ERROR: division by a symbolic value is nonlinear and not allowed"
              << " in QF_LIA mode. The divisor must be a ground constant." << endl;
@@ -137,17 +181,15 @@ SMTNumber SMTNumber::operator/(const SMTNumber& other) const {
 
 SMTNumber SMTNumber::operator%(const SMTNumber& other) const {
     if (m_isGround && other.m_isGround) {
-        if (other.m_groundValue == 0) {
+        if (isLIAMode() ? other.m_groundBig == 0 : other.m_groundValue == 0) {
             cerr << "ERROR: modulo by zero in a ground expression." << endl;
             exit(1);
         }
-        uint64_t r = isLIAMode()
-            ? (uint64_t)((int64_t)m_groundValue % (int64_t)other.m_groundValue)
-            : maskTo(m_groundValue % other.m_groundValue, m_width);
-        return SMTNumber(r, m_width);
+        if (isLIAMode()) return liaGround(m_groundBig % other.m_groundBig);
+        return SMTNumber(maskTo(m_groundValue % other.m_groundValue, m_width), m_width);
     }
-    if (other.m_isGround && other.m_groundValue == 1) return SMTNumber((uint64_t)0, m_width);
-    if (m_isGround && m_groundValue == 0) return *this;
+    if (other.m_isGround && (isLIAMode() ? other.m_groundBig == 1 : other.m_groundValue == 1)) return SMTNumber((uint64_t)0, m_width);
+    if (m_isGround && (isLIAMode() ? m_groundBig == 0 : m_groundValue == 0)) return *this;
     if (isLIAMode() && !other.m_isGround) {
         cerr << "ERROR: modulo by a symbolic value is nonlinear and not allowed"
              << " in QF_LIA mode. The divisor must be a ground constant." << endl;
@@ -221,13 +263,8 @@ SMTNumber SMTNumber::operator>>(const SMTNumber& other) const {
 
 SMTNumber SMTNumber::negate() const {
     if (m_isGround) {
-        uint64_t r = m_groundValue;
-        if (isLIAMode()) {
-            SMTExpr* zero = SMTFactory::makeIntConst(0);
-            SMTExpr* val  = SMTFactory::makeIntConst(r);
-            return SMTNumber(SMTFactory::makeIntSub(zero, val));
-        }
-        r = maskTo(0 - r, m_width);
+        if (isLIAMode()) return liaGround(-m_groundBig);
+        uint64_t r = maskTo(0 - m_groundValue, m_width);
         return SMTNumber(SMTFactory::makeBvConst(r, m_width), true, r);
     }
     SMTExpr* node = isLIAMode() ? SMTFactory::makeIntNeg(m_expr)
@@ -246,8 +283,8 @@ SMTNumber SMTNumber::bitnegate() const {
 
 SMTNumber SMTNumber::sgn() const {
     if (m_isGround) {
-        uint64_t r = (m_groundValue != 0) ? 1 : 0;
-        return SMTNumber(r, m_width);
+        bool nonZero = isLIAMode() ? (m_groundBig != 0) : (m_groundValue != 0);
+        return SMTNumber((uint64_t)(nonZero ? 1 : 0), m_width);
     }
     if (isLIAMode()) {
         SMTExpr* zero = SMTFactory::makeIntConst(0);
@@ -264,7 +301,7 @@ SMTNumber SMTNumber::sgn() const {
 #define REL_OP(OP_CPP, BV_MAKE, INT_MAKE) \
     if (m_isGround && other.m_isGround) { \
         bool r = isLIAMode() \
-            ? ((int64_t)m_groundValue OP_CPP (int64_t)other.m_groundValue) \
+            ? (m_groundBig OP_CPP other.m_groundBig) \
             : (m_groundValue OP_CPP other.m_groundValue); \
         return SMTBoolean(SMTFactory::makeBoolConst(r), true, r); \
     } \
@@ -282,7 +319,8 @@ SMTBoolean SMTNumber::operator>=(const SMTNumber& other) const { REL_OP(>=, make
 
 SMTBoolean SMTNumber::operator!=(const SMTNumber& other) const {
     if (m_isGround && other.m_isGround) {
-        bool r = (m_groundValue != other.m_groundValue);
+        bool r = isLIAMode() ? (m_groundBig != other.m_groundBig)
+                             : (m_groundValue != other.m_groundValue);
         return SMTBoolean(SMTFactory::makeBoolConst(r), true, r);
     }
     SMTExpr* eq = isLIAMode() ? SMTFactory::makeIntEq(m_expr, other.m_expr)
@@ -299,7 +337,7 @@ SMTNumber SMTNumber::ite(const SMTBoolean& cond, const SMTNumber& other) const {
 
 SMTBoolean SMTNumber::Bool() const {
     if (m_isGround) {
-        bool r = (m_groundValue != 0);
+        bool r = isLIAMode() ? (m_groundBig != 0) : (m_groundValue != 0);
         return SMTBoolean(SMTFactory::makeBoolConst(r), true, r);
     }
     if (isLIAMode()) {
