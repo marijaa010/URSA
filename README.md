@@ -51,7 +51,8 @@ Options:
 
 -smt - emit SMT-LIB QF_BV instead of running a SAT solver
 
--smtlogic=QF_BV or QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV)
+-smtlogic=QF_BV or QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV).
+   QF_LIA needs a GMP-enabled build (the default); see "Building with SMT solvers".
 
 -smtsolve=z3 or cvc5 - solve the emitted formula in-process with the linked
    solver and print models formatted the same as the SAT path. For `assert_all`,
@@ -82,6 +83,7 @@ build time (the default builds both):
   make CVC5_SUPPORT=0               # Z3 only
   make Z3_SUPPORT=0                 # cvc5 only
   make Z3_SUPPORT=0 CVC5_SUPPORT=0  # neither; -smt / -smtout still emit SMT-LIB
+  make GMP_SUPPORT=0                # no GMP; disables QF_LIA (SAT and QF_BV still build)
 
 Linking against a solver needs its development files (headers and libraries),
 not just an executable. Point URSA at the install prefixes if they are not in
@@ -107,6 +109,17 @@ https://github.com/cvc5/cvc5/releases):
 
 Extract the cvc5 archive and pass its directory as `CVC5_PREFIX` (it contains
 `include/` and `lib/`).
+
+**GMP** provides arbitrary-precision integers for QF_LIA, so integer literals
+and computed constants are not truncated to 64 bits. It is linked by default:
+
+- macOS: `brew install gmp`
+- Linux: `sudo apt install libgmp-dev` (Debian/Ubuntu) or
+         `sudo dnf install gmp-devel` (Fedora)
+
+Override its location with `GMP_PREFIX=/path/to/gmp` if it is not found. With
+`GMP_SUPPORT=0` the SAT and QF_BV paths still build, but `-smtlogic=QF_LIA` is
+refused with a clear error. When cvc5 is linked its own GMP is reused.
 
 If `-smtsolve` is used for a solver that was not compiled in, URSA prints a
 clear error asking you to rebuild with the corresponding flag.

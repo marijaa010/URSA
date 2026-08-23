@@ -106,7 +106,6 @@ SMTNumber SMTNumber::liaGround(const LiaGround& v) {
 SMTNumber SMTNumber::fromIntLiteral(const char* literal, int width) {
     if (isLIAMode())
         return liaGround(liaFromLiteral(literal));
-    // QF_BV: parse and mask to width.
     LiaGround v = liaFromLiteral(literal);
     return SMTNumber(liaToU64(v), width);
 }
