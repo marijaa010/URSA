@@ -14,7 +14,15 @@ GNU General Public License for more details.
 **************************************************************************************/
 
 #include <iostream>
+#include <fstream>
+#include <sstream>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include "URSA_SATinterpreter.hpp"
+#include "CLIOptions.hpp"
+#include "SMTSolverDriver.hpp"
+#include "SMT_Interpreter.hpp"
 #include "ursa.tab.hpp"
 #include "FormulaFactory.h"
 #include "SATsolver.h"
@@ -25,14 +33,19 @@ GNU General Public License for more details.
 
 using namespace std;
 
-typedef enum { eArgoSAT, eClasp, eMiniSAT } eSolvers;
 eSolvers URSASolver;
 unsigned int iAbstractNumberLength;
 bool bQuiet;
 bool bDimacsOnly;
 bool bMapping;
 bool bCoherentLogicProofExport;
+bool bSMTMode;
+eSMTLogic bSMTLogic;
+bool bSMTSolveMode;
+eSMTSolver bSMTSolver;
+const char* sSMTOutPath;
 Interpreter in;
+SMTInterpreter smtIn;
 
 unsigned int iVarCounter;
 
@@ -57,60 +70,49 @@ void ClearCommand(nodeType *p) {
 
 
 int main(int argc, char** argv) {
-    int i, len;
     cout << "************************************************" << endl;
     cout << "****  URSA Interpreter v4.00 (c) 2010-2020  ****" << endl;
     cout << "*** Predrag Janicic,  University of Belgrade ***" << endl;
     cout << "************************************************" << endl << endl;
-    
-    iAbstractNumberLength=8;
-    bQuiet=false;
-    bDimacsOnly=false;
-    bCoherentLogicProofExport=false;
-    bMapping=false;
-    URSASolver = eClasp;
 
-    for(i=1;i<argc;i++) {
-      if(argv[i][0]=='-')
-         switch(argv[i][1]) {
-           case 'l':  if (sscanf(argv[i]+2,"%i",&len) == 1)  
-                         iAbstractNumberLength = len;
-                      else {
-                         cout << "A number after the -l option expected." << endl << endl;
-                         return false;
-                      }
-                      break;
-           case 's':  {
-                      char *p;
-                      for (p=argv[i]; *p; p++ ) 
-                        *p = tolower(*p);
-                      if(!strcmp(argv[i]+2,"argosat"))
-                        URSASolver = eArgoSAT;
-                      if(!strcmp(argv[i]+2,"minisat"))
-                        URSASolver = eMiniSAT;
-                      break;
-                      }
-           case 'd':  bDimacsOnly=true; break;
-           case 'q':  bQuiet=true; break;
-           case 'c':  bCoherentLogicProofExport=true; break;
-           case 'm':  bMapping=true; break;
-           case 'h':  
-                      cout << "Usage: ./ursa [OPTIONS] ..." << endl << endl;
-                      cout << "Solves specified problems by reducing them to SAT." << endl << endl;
-                      cout << "Options:" << endl;
-                      cout << "-l - sets the number of bits that represent numbers (e.g., -l10; default value is 8)" << endl;
-                      cout << "-d - DIMACS output only" << endl;
-                      cout << "-q - quite mode (models are not printed out)" << endl;
-                      cout << "-m - prints mapping between URSA variables and SAT variables" << endl;
-                      cout << "-s - selects an underlying solvers (e.g., -sargosat, -sclasp, -sminisat; defaulf is clasp)" << endl << endl;
-                      cout << "Example:" << endl;
-                      cout << "./ursa -l10 < examples/CSP/queens.urs" << endl;
-           default :  break;
-         } 
+    CLIOptions opts = parseCLIArgs(argc, argv);
+    if (opts.helpRequested) {
+      printCLIHelp();
+      return 0;
+    }
+    opts.applyToGlobals();
+
+    if (const char* err = opts.validate()) {
+      cerr << "ERROR: " << err << endl;
+      return 1;
     }
 
     iVarCounter=0;
     // yydebug=1;
+
+    if (sSMTOutPath != nullptr) {
+      static ofstream smtOutFile(sSMTOutPath);
+      if (!smtOutFile.is_open()) {
+        cerr << "ERROR: could not open " << sSMTOutPath << " for writing." << endl;
+        return 1;
+      }
+      cout.rdbuf(smtOutFile.rdbuf());
+    }
+
+    if (bSMTSolveMode) {
+      static ostringstream smtBuffer;
+      static streambuf* terminalBuf = cout.rdbuf(smtBuffer.rdbuf());
+      atexit([]() {
+        if (terminalBuf != nullptr) {
+          cout.rdbuf(terminalBuf);
+          terminalBuf = nullptr;
+        }
+        SMTSolverDriver driver(smtBuffer.str(), bSMTSolver,
+                               smtIn.wasAssertAll(),
+                               smtIn.hasOptimize());
+        driver.run();
+      });
+    }
     yyparse();
 
     map<const string, nodeType *, lstr >::iterator it;
@@ -126,8 +128,12 @@ int main(int argc, char** argv) {
 
 
 int ex(nodeType *p) {
+   if (bSMTMode) {
+      smtIn.RecordCommand(p);
+      return smtIn.ExecuteCommand(p);
+   }
    in.RecordCommand(p);
-   return in.ExecuteCommand(p); 
+   return in.ExecuteCommand(p);
 }
 
 
@@ -527,10 +533,12 @@ void Interpreter::SolveOptimizationProblem(nodeType *p) {
                 ExecuteCommand(*i); 
             if(SolveConstraint(p,false)) {
                 best = nOptimalCandidate;
-                nMax = nOptimalCandidate-1;
+                if (bMaximize) nMin = nOptimalCandidate+1;
+                else           nMax = nOptimalCandidate-1;
             }
             else {
-                nMin = nOptimalCandidate+1;
+                if (bMaximize) nMax = nOptimalCandidate-1;
+                else           nMin = nOptimalCandidate+1;
             }
         }
         cout << endl;
@@ -1016,8 +1024,11 @@ void Interpreter::ExecuteCommandTree(nodeType *p) {
 
 
 int store_procedure(nodeType *p) {
-   in.RecordProcedure(p);
-   return 0; 
+   if (bSMTMode)
+      smtIn.RecordProcedure(p);
+   else
+      in.RecordProcedure(p);
+   return 0;
 }
 
 
