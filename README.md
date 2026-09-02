@@ -35,9 +35,11 @@ If the build is successful, the executable output file 'ursa' resides in the src
 
 ## Usage 
 
-Usage: 
+Usage:
 
-  ./ursa options
+```
+./ursa options
+```
 
 Options:
 
@@ -52,13 +54,14 @@ Options:
 -smt - emit SMT-LIB QF_BV instead of running a SAT solver
 
 -smtlogic=QF_BV or QF_LIA - choose the SMT-LIB logic (implies -smt; default QF_BV).
-   QF_LIA needs a GMP-enabled build (the default); see "Building with SMT solvers".
+   QF_LIA needs a GMP-enabled build (the default). See "Building with SMT solvers".
 
 -smtsolve=z3 or cvc5 - solve the emitted formula in-process with the linked
    solver and print models formatted the same as the SAT path. For `assert_all`,
    URSA enumerates all satisfying models by adding blocking clauses between
    checks. Implies -smt. Composes with -smtlogic (e.g., -smtlogic=QF_LIA
-   -smtsolve=z3). Available only if URSA was built with support for that solver
+   -smtsolve=z3). When -smtlogic is not given, the logic defaults to QF_BV.
+   Available only if URSA was built with support for that solver
    (see "Building with SMT solvers" below).
 
 -smtout=<path> - write SMT-LIB output to the given file.
@@ -78,20 +81,24 @@ considered within the set of all models (so the set of models may not be as expe
 no external solver binary is launched. Each solver is optional and selected at
 build time (the default builds both):
 
-  cd src
-  make                              # link both Z3 and cvc5 (default)
-  make CVC5_SUPPORT=0               # Z3 only
-  make Z3_SUPPORT=0                 # cvc5 only
-  make Z3_SUPPORT=0 CVC5_SUPPORT=0  # neither; -smt / -smtout still emit SMT-LIB
-  make GMP_SUPPORT=0                # no GMP; disables QF_LIA (SAT and QF_BV still build)
+```sh
+cd src
+make                              # link both Z3 and cvc5 (default)
+make CVC5_SUPPORT=0               # Z3 only
+make Z3_SUPPORT=0                 # cvc5 only
+make Z3_SUPPORT=0 CVC5_SUPPORT=0  # neither. -smt / -smtout still emit SMT-LIB
+make GMP_SUPPORT=0                # no GMP, disables QF_LIA (SAT and QF_BV still build)
+```
 
 Linking against a solver needs its development files (headers and libraries),
 not just an executable. Point URSA at the install prefixes if they are not in
 the default location:
 
-  make Z3_PREFIX=/path/to/z3 CVC5_PREFIX=/path/to/cvc5
+```sh
+make Z3_PREFIX=/path/to/z3 CVC5_PREFIX=/path/to/cvc5
+```
 
-Z3 is auto-detected via Homebrew (`brew --prefix z3`); both prefixes default to
+Z3 is auto-detected via Homebrew (`brew --prefix z3`), both prefixes default to
 `/usr/local` otherwise.
 
 **Z3:**
@@ -100,7 +107,7 @@ Z3 is auto-detected via Homebrew (`brew --prefix z3`); both prefixes default to
 - Linux: `sudo apt install libz3-dev` (Debian/Ubuntu) or
          `sudo dnf install z3-devel` (Fedora)
 
-**cvc5** (no package manager; use the official static release archives from
+**cvc5** (no package manager, use the official static release archives from
 https://github.com/cvc5/cvc5/releases):
 
 - macOS: `cvc5-macOS-arm64-static-gpl.zip` (Apple Silicon) or
@@ -142,12 +149,16 @@ chosen logic (Z3, cvc5, Boolector for QF_BV, ...).
 Example: emit SMT-LIB to a file and solve `examples/Simple/system2unknowns.urs`
 with Z3:
 
-  ./ursa -smtout=out.smt2 < ../examples/Simple/system2unknowns.urs  
-  z3 out.smt2
+```sh
+./ursa -smtout=out.smt2 < ../examples/Simple/system2unknowns.urs
+z3 out.smt2
+```
 
 Or let URSA pipe directly to the solver without writing a file:
 
-  ./ursa -smtsolve=z3 < ../examples/Simple/system2unknowns.urs
+```sh
+./ursa -smtsolve=z3 < ../examples/Simple/system2unknowns.urs
+```
 
 ### Linear Integer Arithmetic mode (QF_LIA)
 
@@ -156,7 +167,9 @@ of QF_BV. In this mode, numeric variables are treated as unbounded integers
 rather than fixed-width bit-vectors, and arithmetic follows standard integer
 semantics without modular wrap-around.
 
-  ./ursa -smtlogic=QF_LIA < ../examples/Simple/system2unknowns.urs
+```sh
+./ursa -smtlogic=QF_LIA < ../examples/Simple/system2unknowns.urs
+```
 
 Free variables are declared with the `Int` sort, and arithmetic uses the
 standard SMT-LIB operators (`+`, `-`, `*`, `<`, `<=`, `=`, `div`, `mod`).
@@ -167,9 +180,9 @@ arithmetic:
 
 - Bitwise operators (`&`, `|`, `^`, `~`)
 - Shift operators (`<<`, `>>`)
-- Nonlinear multiplication of two symbolic variables (`x * y`); only
+- Nonlinear multiplication of two symbolic variables (`x * y`), only
   multiplication by a ground constant is permitted
-- Division and modulo by a symbolic value (`x / y`, `x % y`); only
+- Division and modulo by a symbolic value (`x / y`, `x % y`), only
   division and modulo by a ground constant are permitted
 
 Semantic differences from QF_BV. URSA programs written for QF_BV assume
@@ -216,5 +229,5 @@ nA[nj] = 999;
 assert(nA[3] == 999 && nj < 5);
 ```
 
-The SAT path does not support symbolic indexing; use `-smt` or
+The SAT path does not support symbolic indexing, use `-smt` or
 `-smtlogic=QF_LIA` for programs that rely on it.

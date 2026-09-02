@@ -91,12 +91,22 @@ Parser/ursa.tab.cpp Parser/ursa.tab.hpp: Parser/ursa.ypp
 	bison -d Parser/ursa.ypp
 	mv ursa.tab.* Parser 
 
-%.o:	%.cpp
+# Rebuild objects when the build configuration changes, so switching a support
+# flag (e.g. CVC5_SUPPORT=0) does not link an object still compiled with a
+# different Z3/cvc5/GMP configuration. .buildflags holds the current signature
+# and is rewritten only when it changes, which then triggers the recompile.
+BUILD_SIG := Z3=$(Z3_SUPPORT) CVC5=$(CVC5_SUPPORT) GMP=$(GMP_SUPPORT)
+.buildflags: force
+	@printf '%s\n' '$(BUILD_SIG)' | cmp -s - $@ 2>/dev/null || printf '%s\n' '$(BUILD_SIG)' > $@
+force: ;
+.PHONY: force
+
+%.o:	%.cpp .buildflags
 	$(CXX) $(ALL_CXXFLAGS) -c $< -o $@
 
 # The SMT solver driver includes the Z3 and cvc5 C++ headers; cvc5 requires
 # C++17, so this single unit is built with C++17 and the solver include paths.
-Interpreter/SMTSolverDriver.o: Interpreter/SMTSolverDriver.cpp
+Interpreter/SMTSolverDriver.o: Interpreter/SMTSolverDriver.cpp .buildflags
 	$(CXX) $(filter-out -std=c++11,$(ALL_CXXFLAGS)) -std=c++17 $(SMT_DEFINES) $(SMT_INCLUDE) -c $< -o $@
 
 Interpreter/SMTSolverDriver.dep: Interpreter/SMTSolverDriver.cpp
@@ -107,7 +117,8 @@ Interpreter/SMTSolverDriver.dep: Interpreter/SMTSolverDriver.cpp
 
 .PHONY = clean
 clean:
-	rm `find . -name '*.dep'` `find . -name '*.o'` `find . -name '*.cpp~'` `find . -name '*.hpp~'` `find . -name '*.cc~'` `find . -name '*.h~'` `find . -name '*.yy.c'` `find . -name '*.tab.cpp'` `find . -name '*.l~'` `find . -name '*.ypp~'` `find . -name '.directory'` 
+	rm `find . -name '*.dep'` `find . -name '*.o'` `find . -name '*.cpp~'` `find . -name '*.hpp~'` `find . -name '*.cc~'` `find . -name '*.h~'` `find . -name '*.yy.c'` `find . -name '*.tab.cpp'` `find . -name '*.l~'` `find . -name '*.ypp~'` `find . -name '.directory'`
+	rm -f .buildflags
 
 
 
