@@ -5,6 +5,7 @@
 *.so
 *.dylib
 *.dSYM/
+src/.buildflags
 
 # Binaries
 src/ursa
