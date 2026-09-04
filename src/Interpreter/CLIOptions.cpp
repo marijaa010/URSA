@@ -87,6 +87,11 @@ CLIOptions parseCLIArgs(int argc, char** argv) {
             if (!strcmp(argv[i] + 2, "argosat")) opts.satSolver = eArgoSAT;
             else if (!strcmp(argv[i] + 2, "minisat")) opts.satSolver = eMiniSAT;
             else if (!strcmp(argv[i] + 2, "clasp")) opts.satSolver = eClasp;
+            else {
+                cerr << "ERROR: unknown option '" << argv[i] << "'." << endl << endl;
+                opts.helpRequested = true;
+                return opts;
+            }
             break;
         }
         case 'd': opts.dimacsOnly = true; break;
@@ -94,7 +99,10 @@ CLIOptions parseCLIArgs(int argc, char** argv) {
         case 'c': opts.coherentLogicProofExport = true; break;
         case 'm': opts.mapping = true; break;
         case 'h': opts.helpRequested = true; break;
-        default: break;
+        default:
+            cerr << "ERROR: unknown option '" << argv[i] << "'." << endl << endl;
+            opts.helpRequested = true;
+            return opts;
         }
     }
     return opts;

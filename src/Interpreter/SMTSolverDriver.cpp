@@ -48,14 +48,26 @@ void printSolution(bool assertAll, int solutionNumber,
     if (assertAll) cout << endl;
 }
 
+string extractSetLogic(const string& buffer) {
+    size_t p = buffer.find("(set-logic");
+    if (p == string::npos) return "";
+    p = buffer.find_first_not_of(" \t", p + 10);
+    if (p == string::npos) return "";
+    size_t e = buffer.find_first_of(" \t)", p);
+    if (e == string::npos) return "";
+    return buffer.substr(p, e - p);
+}
+
 void printTail(int solutionCount, bool assertAll, int checkSatCalls,
-               const char* tag, double totalSeconds) {
+               const char* tag, const string& logic, double totalSeconds) {
     if (solutionCount == 0) {
         cout << "No solutions found." << endl;
     } else if (assertAll) {
         cerr << "[Number of solutions: " << solutionCount << "]" << endl;
     }
-    cerr << "[SMT solving (" << tag << "): over " << checkSatCalls
+    cerr << "[SMT solving (" << tag;
+    if (!logic.empty()) cerr << ", " << logic;
+    cerr << "): over " << checkSatCalls
          << " check-sat " << (checkSatCalls == 1 ? "call" : "calls")
          << ", total: " << totalSeconds << "s]" << endl;
 }
@@ -268,7 +280,7 @@ int runZ3(const string& buffer, bool assertAll, bool hasOptimize) {
         return 1;
     }
     double total = std::chrono::duration<double>(clock_t_::now() - start).count();
-    printTail(solutionCount, assertAll, checkSatCalls, "z3", total);
+    printTail(solutionCount, assertAll, checkSatCalls, "z3", extractSetLogic(buffer), total);
     return 0;
 }
 
@@ -371,7 +383,7 @@ int runCVC5(const string& buffer, bool assertAll, bool hasOptimize) {
         return 1;
     }
     double total = std::chrono::duration<double>(clock_t_::now() - start).count();
-    printTail(solutionCount, assertAll, checkSatCalls, "cvc5", total);
+    printTail(solutionCount, assertAll, checkSatCalls, "cvc5", extractSetLogic(buffer), total);
     return 0;
 }
 
